@@ -1,6 +1,26 @@
 import warnings
-import pandas as pd
 import numpy as np
+
+# ── NumPy uyumluluk yaması (numpy >= 2.0) ─────────────────────
+# evolutionary_forest/tpot, kaldırılmış np.float vb. kullanır
+for _attr, _type in [('float', float), ('int', int), ('bool', bool)]:
+    if not hasattr(np, _attr):
+        setattr(np, _attr, _type)
+
+import pandas as pd
+
+# ── sklearn uyumluluk yaması (sklearn >= 1.6) ─────────────────
+# gplearn, kaldırılmış BaseEstimator._validate_data metodunu kullanır
+import sklearn.base
+try:
+    from sklearn.utils.validation import validate_data as _skl_validate
+    if not hasattr(sklearn.base.BaseEstimator, '_validate_data'):
+        sklearn.base.BaseEstimator._validate_data = (
+            lambda self, *a, **kw: _skl_validate(self, *a, **kw)
+        )
+except ImportError:
+    pass
+
 from sklearn.ensemble import (
     RandomForestRegressor, ExtraTreesRegressor,
     AdaBoostRegressor, GradientBoostingRegressor
@@ -13,6 +33,31 @@ from xgboost import XGBRegressor
 from lightgbm import LGBMRegressor
 from catboost import CatBoostRegressor
 from gplearn.genetic import SymbolicTransformer
+
+# ── gplearn uyumluluk yaması (sklearn 1.6+) ──────────────────
+# sklearn 1.6+ __sklearn_tags__ MRO zinciri gplearn ile uyumsuz;
+# _validate_data'yı BaseSymbolic üzerinde geçersiz kılıyoruz.
+try:
+    import gplearn.genetic as _gp
+    from sklearn.utils.validation import check_array as _check_array
+
+    def _gplearn_validate_data(self, X, y=None, **kwargs):
+        X = _check_array(X, dtype='numeric')
+        self.n_features_in_ = X.shape[1]
+        if y is not None:
+            y = _check_array(y, ensure_2d=False, dtype='numeric')
+            return X, y
+        return X
+
+    _gp.BaseSymbolic._validate_data = _gplearn_validate_data
+except (ImportError, AttributeError):
+    pass
+
+# ── evolutionary_forest uyumluluk yaması ───────────────────────────
+# basic_primitives consistency_check bugını atla (v0.2.4)
+import evolutionary_forest.forest as _ef_mod
+_ef_mod.consistency_check = lambda learner: None
+
 from evolutionary_forest.forest import EvolutionaryForestRegressor
 import smogn
 
@@ -75,11 +120,30 @@ def apply_smogn(X_train, y_train):
     df_temp = pd.DataFrame(X_train, columns=col_names)
     df_temp['target'] = y_train
 
-    df_augmented = smogn.smoter(data=df_temp, y='target')
+    y_min = float(df_temp['target'].min())
+    y_med = float(df_temp['target'].median())
+    y_max = float(df_temp['target'].max())
 
-    X_aug = df_augmented[col_names].values.astype(np.float64)
-    y_aug = df_augmented['target'].values.astype(np.float64)
-    return X_aug, y_aug
+    strategies = [
+        {},
+        {'rel_xtrm_type': 'both', 'rel_coef': 1.5},
+        {'rel_xtrm_type': 'both', 'rel_coef': 0.5},
+        {'rel_method': 'manual',
+         'rel_ctrl_pts_rg': [[y_min, 1, 0],
+                             [y_med, 0, 0],
+                             [y_max, 1, 0]]},
+    ]
+
+    for params in strategies:
+        try:
+            df_augmented = smogn.smoter(data=df_temp, y='target', **params)
+            X_aug = df_augmented[col_names].values.astype(np.float64)
+            y_aug = df_augmented['target'].values.astype(np.float64)
+            return X_aug, y_aug
+        except (ValueError, Exception):
+            continue
+
+    raise ValueError("SMOGN: tüm relevanslık stratejileri başarısız oldu")
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -111,13 +175,12 @@ def apply_stgp_ef(X_train, y_train, X_test):
 
     # ── EF — Evolutionary Forest Feature Extraction ─────────────
     ef = EvolutionaryForestRegressor(
-        n_estimators=200,
-        max_features=1.0,
         n_gen=20,
         n_pop=200,
+        basic_primitives='optimal',
         verbose=False,
         random_state=42,
-        n_jobs=1
+        n_process=1
     )
     ef.fit(X_train, y_train)
     X_train_ef = np.nan_to_num(ef.transform(X_train))
@@ -310,3 +373,34 @@ def target_summary(results_df, target_col):
     scenario_order = ['Base', 'SMOGN', 'STGP-EF', 'SMOGN+STGP-EF']
     pivot = pivot.reindex(columns=[s for s in scenario_order if s in pivot.columns])
     return pivot
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  Geniş Formatlı Sonuç Kaydetme
+# ═══════════════════════════════════════════════════════════════════
+SCENARIO_ORDER = ['Base', 'SMOGN', 'STGP-EF', 'SMOGN+STGP-EF']
+
+
+def save_wide_results(df_long, path):
+    """
+    Uzun formattaki sonuç DataFrame'ini geniş (pivot) formata çevirip
+    okunabilir bir CSV olarak kaydeder.
+
+    Sütunlar: Veri Seti | Hedef | Algoritma | Base | SMOGN | STGP-EF |
+              SMOGN+STGP-EF | Maks_R2 | Maks_Senaryo
+    """
+    pivot = df_long.pivot_table(
+        index=['Veri Seti', 'Hedef', 'Algoritma'],
+        columns='Senaryo',
+        values='R2_Score'
+    )
+    cols = [s for s in SCENARIO_ORDER if s in pivot.columns]
+    pivot = pivot.reindex(columns=cols)
+
+    pivot['Maks_R2'] = pivot[cols].max(axis=1)
+    pivot['Maks_Senaryo'] = pivot[cols].idxmax(axis=1)
+
+    wide = pivot.reset_index()
+    wide = wide.sort_values(['Veri Seti', 'Hedef', 'Algoritma']).reset_index(drop=True)
+    wide.to_csv(path, index=False, float_format='%.6f')
+    return wide

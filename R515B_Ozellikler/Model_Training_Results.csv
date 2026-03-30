@@ -1,0 +1,321 @@
+Hedef,Senaryo,Algoritma,R2_Score,Veri Seti
+P(çıktı),Base,RF,0.999727,Doymuş Buhar
+P(çıktı),Base,ET,0.999994,Doymuş Buhar
+P(çıktı),Base,AdaBoost,0.998632,Doymuş Buhar
+P(çıktı),Base,GBDT,0.999179,Doymuş Buhar
+P(çıktı),Base,DART,0.96098,Doymuş Buhar
+P(çıktı),Base,XGBoost,0.999141,Doymuş Buhar
+P(çıktı),Base,LightGBM,0.970999,Doymuş Buhar
+P(çıktı),Base,CatBoost,0.999492,Doymuş Buhar
+P(çıktı),SMOGN,RF,,Doymuş Buhar
+P(çıktı),SMOGN,ET,,Doymuş Buhar
+P(çıktı),SMOGN,AdaBoost,,Doymuş Buhar
+P(çıktı),SMOGN,GBDT,,Doymuş Buhar
+P(çıktı),SMOGN,DART,,Doymuş Buhar
+P(çıktı),SMOGN,XGBoost,,Doymuş Buhar
+P(çıktı),SMOGN,LightGBM,,Doymuş Buhar
+P(çıktı),SMOGN,CatBoost,,Doymuş Buhar
+P(çıktı),STGP-EF,RF,,Doymuş Buhar
+P(çıktı),STGP-EF,ET,,Doymuş Buhar
+P(çıktı),STGP-EF,AdaBoost,,Doymuş Buhar
+P(çıktı),STGP-EF,GBDT,,Doymuş Buhar
+P(çıktı),STGP-EF,DART,,Doymuş Buhar
+P(çıktı),STGP-EF,XGBoost,,Doymuş Buhar
+P(çıktı),STGP-EF,LightGBM,,Doymuş Buhar
+P(çıktı),STGP-EF,CatBoost,,Doymuş Buhar
+P(çıktı),SMOGN+STGP-EF,RF,,Doymuş Buhar
+P(çıktı),SMOGN+STGP-EF,ET,,Doymuş Buhar
+P(çıktı),SMOGN+STGP-EF,AdaBoost,,Doymuş Buhar
+P(çıktı),SMOGN+STGP-EF,GBDT,,Doymuş Buhar
+P(çıktı),SMOGN+STGP-EF,DART,,Doymuş Buhar
+P(çıktı),SMOGN+STGP-EF,XGBoost,,Doymuş Buhar
+P(çıktı),SMOGN+STGP-EF,LightGBM,,Doymuş Buhar
+P(çıktı),SMOGN+STGP-EF,CatBoost,,Doymuş Buhar
+v sıvı (çıktı),Base,RF,0.999185,Doymuş Buhar
+v sıvı (çıktı),Base,ET,0.999988,Doymuş Buhar
+v sıvı (çıktı),Base,AdaBoost,0.9971,Doymuş Buhar
+v sıvı (çıktı),Base,GBDT,0.997804,Doymuş Buhar
+v sıvı (çıktı),Base,DART,0.934492,Doymuş Buhar
+v sıvı (çıktı),Base,XGBoost,0.998102,Doymuş Buhar
+v sıvı (çıktı),Base,LightGBM,0.942944,Doymuş Buhar
+v sıvı (çıktı),Base,CatBoost,0.998553,Doymuş Buhar
+v sıvı (çıktı),SMOGN,RF,0.999758,Doymuş Buhar
+v sıvı (çıktı),SMOGN,ET,0.999822,Doymuş Buhar
+v sıvı (çıktı),SMOGN,AdaBoost,0.998526,Doymuş Buhar
+v sıvı (çıktı),SMOGN,GBDT,0.999586,Doymuş Buhar
+v sıvı (çıktı),SMOGN,DART,0.937782,Doymuş Buhar
+v sıvı (çıktı),SMOGN,XGBoost,0.997286,Doymuş Buhar
+v sıvı (çıktı),SMOGN,LightGBM,0.940126,Doymuş Buhar
+v sıvı (çıktı),SMOGN,CatBoost,0.999456,Doymuş Buhar
+v sıvı (çıktı),STGP-EF,RF,,Doymuş Buhar
+v sıvı (çıktı),STGP-EF,ET,,Doymuş Buhar
+v sıvı (çıktı),STGP-EF,AdaBoost,,Doymuş Buhar
+v sıvı (çıktı),STGP-EF,GBDT,,Doymuş Buhar
+v sıvı (çıktı),STGP-EF,DART,,Doymuş Buhar
+v sıvı (çıktı),STGP-EF,XGBoost,,Doymuş Buhar
+v sıvı (çıktı),STGP-EF,LightGBM,,Doymuş Buhar
+v sıvı (çıktı),STGP-EF,CatBoost,,Doymuş Buhar
+v sıvı (çıktı),SMOGN+STGP-EF,RF,,Doymuş Buhar
+v sıvı (çıktı),SMOGN+STGP-EF,ET,,Doymuş Buhar
+v sıvı (çıktı),SMOGN+STGP-EF,AdaBoost,,Doymuş Buhar
+v sıvı (çıktı),SMOGN+STGP-EF,GBDT,,Doymuş Buhar
+v sıvı (çıktı),SMOGN+STGP-EF,DART,,Doymuş Buhar
+v sıvı (çıktı),SMOGN+STGP-EF,XGBoost,,Doymuş Buhar
+v sıvı (çıktı),SMOGN+STGP-EF,LightGBM,,Doymuş Buhar
+v sıvı (çıktı),SMOGN+STGP-EF,CatBoost,,Doymuş Buhar
+v buhar (çıktı),Base,RF,0.998877,Doymuş Buhar
+v buhar (çıktı),Base,ET,0.999977,Doymuş Buhar
+v buhar (çıktı),Base,AdaBoost,0.990927,Doymuş Buhar
+v buhar (çıktı),Base,GBDT,0.996527,Doymuş Buhar
+v buhar (çıktı),Base,DART,0.832681,Doymuş Buhar
+v buhar (çıktı),Base,XGBoost,0.995102,Doymuş Buhar
+v buhar (çıktı),Base,LightGBM,0.801085,Doymuş Buhar
+v buhar (çıktı),Base,CatBoost,0.997066,Doymuş Buhar
+v buhar (çıktı),SMOGN,RF,0.995233,Doymuş Buhar
+v buhar (çıktı),SMOGN,ET,0.999395,Doymuş Buhar
+v buhar (çıktı),SMOGN,AdaBoost,0.988544,Doymuş Buhar
+v buhar (çıktı),SMOGN,GBDT,0.9931,Doymuş Buhar
+v buhar (çıktı),SMOGN,DART,0.980041,Doymuş Buhar
+v buhar (çıktı),SMOGN,XGBoost,0.984776,Doymuş Buhar
+v buhar (çıktı),SMOGN,LightGBM,0.987533,Doymuş Buhar
+v buhar (çıktı),SMOGN,CatBoost,0.996656,Doymuş Buhar
+v buhar (çıktı),STGP-EF,RF,,Doymuş Buhar
+v buhar (çıktı),STGP-EF,ET,,Doymuş Buhar
+v buhar (çıktı),STGP-EF,AdaBoost,,Doymuş Buhar
+v buhar (çıktı),STGP-EF,GBDT,,Doymuş Buhar
+v buhar (çıktı),STGP-EF,DART,,Doymuş Buhar
+v buhar (çıktı),STGP-EF,XGBoost,,Doymuş Buhar
+v buhar (çıktı),STGP-EF,LightGBM,,Doymuş Buhar
+v buhar (çıktı),STGP-EF,CatBoost,,Doymuş Buhar
+v buhar (çıktı),SMOGN+STGP-EF,RF,,Doymuş Buhar
+v buhar (çıktı),SMOGN+STGP-EF,ET,,Doymuş Buhar
+v buhar (çıktı),SMOGN+STGP-EF,AdaBoost,,Doymuş Buhar
+v buhar (çıktı),SMOGN+STGP-EF,GBDT,,Doymuş Buhar
+v buhar (çıktı),SMOGN+STGP-EF,DART,,Doymuş Buhar
+v buhar (çıktı),SMOGN+STGP-EF,XGBoost,,Doymuş Buhar
+v buhar (çıktı),SMOGN+STGP-EF,LightGBM,,Doymuş Buhar
+v buhar (çıktı),SMOGN+STGP-EF,CatBoost,,Doymuş Buhar
+h sıvı (çıktı),Base,RF,0.999771,Doymuş Buhar
+h sıvı (çıktı),Base,ET,0.999994,Doymuş Buhar
+h sıvı (çıktı),Base,AdaBoost,0.9993,Doymuş Buhar
+h sıvı (çıktı),Base,GBDT,0.999313,Doymuş Buhar
+h sıvı (çıktı),Base,DART,0.974902,Doymuş Buhar
+h sıvı (çıktı),Base,XGBoost,0.999087,Doymuş Buhar
+h sıvı (çıktı),Base,LightGBM,0.979325,Doymuş Buhar
+h sıvı (çıktı),Base,CatBoost,0.999592,Doymuş Buhar
+h sıvı (çıktı),SMOGN,RF,,Doymuş Buhar
+h sıvı (çıktı),SMOGN,ET,,Doymuş Buhar
+h sıvı (çıktı),SMOGN,AdaBoost,,Doymuş Buhar
+h sıvı (çıktı),SMOGN,GBDT,,Doymuş Buhar
+h sıvı (çıktı),SMOGN,DART,,Doymuş Buhar
+h sıvı (çıktı),SMOGN,XGBoost,,Doymuş Buhar
+h sıvı (çıktı),SMOGN,LightGBM,,Doymuş Buhar
+h sıvı (çıktı),SMOGN,CatBoost,,Doymuş Buhar
+h sıvı (çıktı),STGP-EF,RF,,Doymuş Buhar
+h sıvı (çıktı),STGP-EF,ET,,Doymuş Buhar
+h sıvı (çıktı),STGP-EF,AdaBoost,,Doymuş Buhar
+h sıvı (çıktı),STGP-EF,GBDT,,Doymuş Buhar
+h sıvı (çıktı),STGP-EF,DART,,Doymuş Buhar
+h sıvı (çıktı),STGP-EF,XGBoost,,Doymuş Buhar
+h sıvı (çıktı),STGP-EF,LightGBM,,Doymuş Buhar
+h sıvı (çıktı),STGP-EF,CatBoost,,Doymuş Buhar
+h sıvı (çıktı),SMOGN+STGP-EF,RF,,Doymuş Buhar
+h sıvı (çıktı),SMOGN+STGP-EF,ET,,Doymuş Buhar
+h sıvı (çıktı),SMOGN+STGP-EF,AdaBoost,,Doymuş Buhar
+h sıvı (çıktı),SMOGN+STGP-EF,GBDT,,Doymuş Buhar
+h sıvı (çıktı),SMOGN+STGP-EF,DART,,Doymuş Buhar
+h sıvı (çıktı),SMOGN+STGP-EF,XGBoost,,Doymuş Buhar
+h sıvı (çıktı),SMOGN+STGP-EF,LightGBM,,Doymuş Buhar
+h sıvı (çıktı),SMOGN+STGP-EF,CatBoost,,Doymuş Buhar
+h buhar (çıktı),Base,RF,0.999666,Doymuş Buhar
+h buhar (çıktı),Base,ET,0.999992,Doymuş Buhar
+h buhar (çıktı),Base,AdaBoost,0.996068,Doymuş Buhar
+h buhar (çıktı),Base,GBDT,0.99899,Doymuş Buhar
+h buhar (çıktı),Base,DART,0.976512,Doymuş Buhar
+h buhar (çıktı),Base,XGBoost,0.998603,Doymuş Buhar
+h buhar (çıktı),Base,LightGBM,0.974732,Doymuş Buhar
+h buhar (çıktı),Base,CatBoost,0.999301,Doymuş Buhar
+h buhar (çıktı),SMOGN,RF,,Doymuş Buhar
+h buhar (çıktı),SMOGN,ET,,Doymuş Buhar
+h buhar (çıktı),SMOGN,AdaBoost,,Doymuş Buhar
+h buhar (çıktı),SMOGN,GBDT,,Doymuş Buhar
+h buhar (çıktı),SMOGN,DART,,Doymuş Buhar
+h buhar (çıktı),SMOGN,XGBoost,,Doymuş Buhar
+h buhar (çıktı),SMOGN,LightGBM,,Doymuş Buhar
+h buhar (çıktı),SMOGN,CatBoost,,Doymuş Buhar
+h buhar (çıktı),STGP-EF,RF,,Doymuş Buhar
+h buhar (çıktı),STGP-EF,ET,,Doymuş Buhar
+h buhar (çıktı),STGP-EF,AdaBoost,,Doymuş Buhar
+h buhar (çıktı),STGP-EF,GBDT,,Doymuş Buhar
+h buhar (çıktı),STGP-EF,DART,,Doymuş Buhar
+h buhar (çıktı),STGP-EF,XGBoost,,Doymuş Buhar
+h buhar (çıktı),STGP-EF,LightGBM,,Doymuş Buhar
+h buhar (çıktı),STGP-EF,CatBoost,,Doymuş Buhar
+h buhar (çıktı),SMOGN+STGP-EF,RF,,Doymuş Buhar
+h buhar (çıktı),SMOGN+STGP-EF,ET,,Doymuş Buhar
+h buhar (çıktı),SMOGN+STGP-EF,AdaBoost,,Doymuş Buhar
+h buhar (çıktı),SMOGN+STGP-EF,GBDT,,Doymuş Buhar
+h buhar (çıktı),SMOGN+STGP-EF,DART,,Doymuş Buhar
+h buhar (çıktı),SMOGN+STGP-EF,XGBoost,,Doymuş Buhar
+h buhar (çıktı),SMOGN+STGP-EF,LightGBM,,Doymuş Buhar
+h buhar (çıktı),SMOGN+STGP-EF,CatBoost,,Doymuş Buhar
+s sıvı (çıktı),Base,RF,0.999762,Doymuş Buhar
+s sıvı (çıktı),Base,ET,0.999994,Doymuş Buhar
+s sıvı (çıktı),Base,AdaBoost,0.999553,Doymuş Buhar
+s sıvı (çıktı),Base,GBDT,0.999266,Doymuş Buhar
+s sıvı (çıktı),Base,DART,0.97526,Doymuş Buhar
+s sıvı (çıktı),Base,XGBoost,0.998999,Doymuş Buhar
+s sıvı (çıktı),Base,LightGBM,0.977801,Doymuş Buhar
+s sıvı (çıktı),Base,CatBoost,0.999477,Doymuş Buhar
+s sıvı (çıktı),SMOGN,RF,,Doymuş Buhar
+s sıvı (çıktı),SMOGN,ET,,Doymuş Buhar
+s sıvı (çıktı),SMOGN,AdaBoost,,Doymuş Buhar
+s sıvı (çıktı),SMOGN,GBDT,,Doymuş Buhar
+s sıvı (çıktı),SMOGN,DART,,Doymuş Buhar
+s sıvı (çıktı),SMOGN,XGBoost,,Doymuş Buhar
+s sıvı (çıktı),SMOGN,LightGBM,,Doymuş Buhar
+s sıvı (çıktı),SMOGN,CatBoost,,Doymuş Buhar
+s sıvı (çıktı),STGP-EF,RF,,Doymuş Buhar
+s sıvı (çıktı),STGP-EF,ET,,Doymuş Buhar
+s sıvı (çıktı),STGP-EF,AdaBoost,,Doymuş Buhar
+s sıvı (çıktı),STGP-EF,GBDT,,Doymuş Buhar
+s sıvı (çıktı),STGP-EF,DART,,Doymuş Buhar
+s sıvı (çıktı),STGP-EF,XGBoost,,Doymuş Buhar
+s sıvı (çıktı),STGP-EF,LightGBM,,Doymuş Buhar
+s sıvı (çıktı),STGP-EF,CatBoost,,Doymuş Buhar
+s sıvı (çıktı),SMOGN+STGP-EF,RF,,Doymuş Buhar
+s sıvı (çıktı),SMOGN+STGP-EF,ET,,Doymuş Buhar
+s sıvı (çıktı),SMOGN+STGP-EF,AdaBoost,,Doymuş Buhar
+s sıvı (çıktı),SMOGN+STGP-EF,GBDT,,Doymuş Buhar
+s sıvı (çıktı),SMOGN+STGP-EF,DART,,Doymuş Buhar
+s sıvı (çıktı),SMOGN+STGP-EF,XGBoost,,Doymuş Buhar
+s sıvı (çıktı),SMOGN+STGP-EF,LightGBM,,Doymuş Buhar
+s sıvı (çıktı),SMOGN+STGP-EF,CatBoost,,Doymuş Buhar
+s buhar (çıktı),Base,RF,0.989941,Doymuş Buhar
+s buhar (çıktı),Base,ET,0.999575,Doymuş Buhar
+s buhar (çıktı),Base,AdaBoost,0.916272,Doymuş Buhar
+s buhar (çıktı),Base,GBDT,0.973692,Doymuş Buhar
+s buhar (çıktı),Base,DART,0.447064,Doymuş Buhar
+s buhar (çıktı),Base,XGBoost,0.978514,Doymuş Buhar
+s buhar (çıktı),Base,LightGBM,0.459052,Doymuş Buhar
+s buhar (çıktı),Base,CatBoost,0.979281,Doymuş Buhar
+s buhar (çıktı),SMOGN,RF,0.934952,Doymuş Buhar
+s buhar (çıktı),SMOGN,ET,0.994563,Doymuş Buhar
+s buhar (çıktı),SMOGN,AdaBoost,0.847244,Doymuş Buhar
+s buhar (çıktı),SMOGN,GBDT,0.928637,Doymuş Buhar
+s buhar (çıktı),SMOGN,DART,0.921088,Doymuş Buhar
+s buhar (çıktı),SMOGN,XGBoost,0.8426,Doymuş Buhar
+s buhar (çıktı),SMOGN,LightGBM,0.908272,Doymuş Buhar
+s buhar (çıktı),SMOGN,CatBoost,0.946017,Doymuş Buhar
+s buhar (çıktı),STGP-EF,RF,,Doymuş Buhar
+s buhar (çıktı),STGP-EF,ET,,Doymuş Buhar
+s buhar (çıktı),STGP-EF,AdaBoost,,Doymuş Buhar
+s buhar (çıktı),STGP-EF,GBDT,,Doymuş Buhar
+s buhar (çıktı),STGP-EF,DART,,Doymuş Buhar
+s buhar (çıktı),STGP-EF,XGBoost,,Doymuş Buhar
+s buhar (çıktı),STGP-EF,LightGBM,,Doymuş Buhar
+s buhar (çıktı),STGP-EF,CatBoost,,Doymuş Buhar
+s buhar (çıktı),SMOGN+STGP-EF,RF,,Doymuş Buhar
+s buhar (çıktı),SMOGN+STGP-EF,ET,,Doymuş Buhar
+s buhar (çıktı),SMOGN+STGP-EF,AdaBoost,,Doymuş Buhar
+s buhar (çıktı),SMOGN+STGP-EF,GBDT,,Doymuş Buhar
+s buhar (çıktı),SMOGN+STGP-EF,DART,,Doymuş Buhar
+s buhar (çıktı),SMOGN+STGP-EF,XGBoost,,Doymuş Buhar
+s buhar (çıktı),SMOGN+STGP-EF,LightGBM,,Doymuş Buhar
+s buhar (çıktı),SMOGN+STGP-EF,CatBoost,,Doymuş Buhar
+v (çıktı),Base,RF,0.999132,Kızgın Buhar
+v (çıktı),Base,ET,0.999753,Kızgın Buhar
+v (çıktı),Base,AdaBoost,0.982212,Kızgın Buhar
+v (çıktı),Base,GBDT,0.999307,Kızgın Buhar
+v (çıktı),Base,DART,0.990836,Kızgın Buhar
+v (çıktı),Base,XGBoost,0.998142,Kızgın Buhar
+v (çıktı),Base,LightGBM,0.996131,Kızgın Buhar
+v (çıktı),Base,CatBoost,0.997872,Kızgın Buhar
+v (çıktı),SMOGN,RF,0.998631,Kızgın Buhar
+v (çıktı),SMOGN,ET,0.999636,Kızgın Buhar
+v (çıktı),SMOGN,AdaBoost,0.968333,Kızgın Buhar
+v (çıktı),SMOGN,GBDT,0.999086,Kızgın Buhar
+v (çıktı),SMOGN,DART,0.988676,Kızgın Buhar
+v (çıktı),SMOGN,XGBoost,0.99838,Kızgın Buhar
+v (çıktı),SMOGN,LightGBM,0.995487,Kızgın Buhar
+v (çıktı),SMOGN,CatBoost,0.998351,Kızgın Buhar
+v (çıktı),STGP-EF,RF,,Kızgın Buhar
+v (çıktı),STGP-EF,ET,,Kızgın Buhar
+v (çıktı),STGP-EF,AdaBoost,,Kızgın Buhar
+v (çıktı),STGP-EF,GBDT,,Kızgın Buhar
+v (çıktı),STGP-EF,DART,,Kızgın Buhar
+v (çıktı),STGP-EF,XGBoost,,Kızgın Buhar
+v (çıktı),STGP-EF,LightGBM,,Kızgın Buhar
+v (çıktı),STGP-EF,CatBoost,,Kızgın Buhar
+v (çıktı),SMOGN+STGP-EF,RF,,Kızgın Buhar
+v (çıktı),SMOGN+STGP-EF,ET,,Kızgın Buhar
+v (çıktı),SMOGN+STGP-EF,AdaBoost,,Kızgın Buhar
+v (çıktı),SMOGN+STGP-EF,GBDT,,Kızgın Buhar
+v (çıktı),SMOGN+STGP-EF,DART,,Kızgın Buhar
+v (çıktı),SMOGN+STGP-EF,XGBoost,,Kızgın Buhar
+v (çıktı),SMOGN+STGP-EF,LightGBM,,Kızgın Buhar
+v (çıktı),SMOGN+STGP-EF,CatBoost,,Kızgın Buhar
+h (çıktı),Base,RF,0.998546,Kızgın Buhar
+h (çıktı),Base,ET,0.999662,Kızgın Buhar
+h (çıktı),Base,AdaBoost,0.970343,Kızgın Buhar
+h (çıktı),Base,GBDT,0.998111,Kızgın Buhar
+h (çıktı),Base,DART,0.977607,Kızgın Buhar
+h (çıktı),Base,XGBoost,0.998758,Kızgın Buhar
+h (çıktı),Base,LightGBM,0.98586,Kızgın Buhar
+h (çıktı),Base,CatBoost,0.998791,Kızgın Buhar
+h (çıktı),SMOGN,RF,0.948281,Kızgın Buhar
+h (çıktı),SMOGN,ET,0.948496,Kızgın Buhar
+h (çıktı),SMOGN,AdaBoost,0.891545,Kızgın Buhar
+h (çıktı),SMOGN,GBDT,0.960263,Kızgın Buhar
+h (çıktı),SMOGN,DART,0.961775,Kızgın Buhar
+h (çıktı),SMOGN,XGBoost,0.961534,Kızgın Buhar
+h (çıktı),SMOGN,LightGBM,0.957803,Kızgın Buhar
+h (çıktı),SMOGN,CatBoost,0.955136,Kızgın Buhar
+h (çıktı),STGP-EF,RF,,Kızgın Buhar
+h (çıktı),STGP-EF,ET,,Kızgın Buhar
+h (çıktı),STGP-EF,AdaBoost,,Kızgın Buhar
+h (çıktı),STGP-EF,GBDT,,Kızgın Buhar
+h (çıktı),STGP-EF,DART,,Kızgın Buhar
+h (çıktı),STGP-EF,XGBoost,,Kızgın Buhar
+h (çıktı),STGP-EF,LightGBM,,Kızgın Buhar
+h (çıktı),STGP-EF,CatBoost,,Kızgın Buhar
+h (çıktı),SMOGN+STGP-EF,RF,,Kızgın Buhar
+h (çıktı),SMOGN+STGP-EF,ET,,Kızgın Buhar
+h (çıktı),SMOGN+STGP-EF,AdaBoost,,Kızgın Buhar
+h (çıktı),SMOGN+STGP-EF,GBDT,,Kızgın Buhar
+h (çıktı),SMOGN+STGP-EF,DART,,Kızgın Buhar
+h (çıktı),SMOGN+STGP-EF,XGBoost,,Kızgın Buhar
+h (çıktı),SMOGN+STGP-EF,LightGBM,,Kızgın Buhar
+h (çıktı),SMOGN+STGP-EF,CatBoost,,Kızgın Buhar
+s (çıktı),Base,RF,0.984571,Kızgın Buhar
+s (çıktı),Base,ET,0.996586,Kızgın Buhar
+s (çıktı),Base,AdaBoost,0.865461,Kızgın Buhar
+s (çıktı),Base,GBDT,0.991076,Kızgın Buhar
+s (çıktı),Base,DART,0.959537,Kızgın Buhar
+s (çıktı),Base,XGBoost,0.994127,Kızgın Buhar
+s (çıktı),Base,LightGBM,0.977104,Kızgın Buhar
+s (çıktı),Base,CatBoost,0.995891,Kızgın Buhar
+s (çıktı),SMOGN,RF,0.957053,Kızgın Buhar
+s (çıktı),SMOGN,ET,0.980669,Kızgın Buhar
+s (çıktı),SMOGN,AdaBoost,0.824758,Kızgın Buhar
+s (çıktı),SMOGN,GBDT,0.977314,Kızgın Buhar
+s (çıktı),SMOGN,DART,0.860865,Kızgın Buhar
+s (çıktı),SMOGN,XGBoost,0.977084,Kızgın Buhar
+s (çıktı),SMOGN,LightGBM,0.902301,Kızgın Buhar
+s (çıktı),SMOGN,CatBoost,0.98099,Kızgın Buhar
+s (çıktı),STGP-EF,RF,,Kızgın Buhar
+s (çıktı),STGP-EF,ET,,Kızgın Buhar
+s (çıktı),STGP-EF,AdaBoost,,Kızgın Buhar
+s (çıktı),STGP-EF,GBDT,,Kızgın Buhar
+s (çıktı),STGP-EF,DART,,Kızgın Buhar
+s (çıktı),STGP-EF,XGBoost,,Kızgın Buhar
+s (çıktı),STGP-EF,LightGBM,,Kızgın Buhar
+s (çıktı),STGP-EF,CatBoost,,Kızgın Buhar
+s (çıktı),SMOGN+STGP-EF,RF,,Kızgın Buhar
+s (çıktı),SMOGN+STGP-EF,ET,,Kızgın Buhar
+s (çıktı),SMOGN+STGP-EF,AdaBoost,,Kızgın Buhar
+s (çıktı),SMOGN+STGP-EF,GBDT,,Kızgın Buhar
+s (çıktı),SMOGN+STGP-EF,DART,,Kızgın Buhar
+s (çıktı),SMOGN+STGP-EF,XGBoost,,Kızgın Buhar
+s (çıktı),SMOGN+STGP-EF,LightGBM,,Kızgın Buhar
+s (çıktı),SMOGN+STGP-EF,CatBoost,,Kızgın Buhar

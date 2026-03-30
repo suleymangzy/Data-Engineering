@@ -22,9 +22,12 @@ except ImportError:
     pass
 
 from sklearn.ensemble import (
-    ExtraTreesRegressor,
+    ExtraTreesRegressor, RandomForestRegressor,
     AdaBoostRegressor, GradientBoostingRegressor
 )
+import xgboost as xgb
+import lightgbm as lgb
+from catboost import CatBoostRegressor
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import r2_score, mean_absolute_error, mean_squared_error
 from sklearn.preprocessing import StandardScaler
@@ -70,27 +73,23 @@ pd.set_option('display.float_format', '{:.4f}'.format)
 def get_regressors():
     """Kullanılacak regresyon algoritmalarını döndürür."""
     return {
-        'AdaBoost': AdaBoostRegressor(n_estimators=200, random_state=42),
-        'GP': SymbolicRegressor(
-            generations=20,
-            population_size=1000,
-            function_set=['add', 'sub', 'mul', 'div', 'sqrt', 'log', 'abs', 'neg'],
-            parsimony_coefficient=0.005,
-            max_samples=0.9,
-            verbose=0,
-            random_state=42,
-            n_jobs=1
-        ),
-        'EF': EvolutionaryForestRegressor(
-            n_gen=20,
-            n_pop=200,
-            basic_primitives='optimal',
-            verbose=False,
-            random_state=42,
-            n_process=1
-        ),
-        'GBDT': GradientBoostingRegressor(n_estimators=200, random_state=42),
-        'ET': ExtraTreesRegressor(n_estimators=200, n_jobs=-1, random_state=42),
+        'AdaBoost':  AdaBoostRegressor(n_estimators=200, random_state=42),
+        'CatBoost':  CatBoostRegressor(n_estimators=200, random_state=42, verbose=0),
+        'DART':      lgb.LGBMRegressor(boosting_type='dart', n_estimators=200,
+                                       random_state=42, verbose=-1),
+        'EF':        EvolutionaryForestRegressor(
+                         n_gen=20, n_pop=200, basic_primitives='optimal',
+                         verbose=False, random_state=42, n_process=1),
+        'ET':        ExtraTreesRegressor(n_estimators=200, n_jobs=-1, random_state=42),
+        'GBDT':      GradientBoostingRegressor(n_estimators=200, random_state=42),
+        'GP':        SymbolicRegressor(
+                         generations=20, population_size=1000,
+                         function_set=['add', 'sub', 'mul', 'div', 'sqrt', 'log', 'abs', 'neg'],
+                         parsimony_coefficient=0.005, max_samples=0.9,
+                         verbose=0, random_state=42, n_jobs=1),
+        'LightGBM':  lgb.LGBMRegressor(n_estimators=200, random_state=42, verbose=-1),
+        'RF':        RandomForestRegressor(n_estimators=200, n_jobs=-1, random_state=42),
+        'XGBoost':   xgb.XGBRegressor(n_estimators=200, random_state=42, verbosity=0),
     }
 
 
@@ -393,7 +392,7 @@ def save_wide_results(df_long, path):
     okunabilir bir CSV olarak kaydeder.
 
     Sütunlar: Veri Seti | Hedef | Algoritma | Base | SMOGN | STGP-EF |
-              SMOGN+STGP-EF | Maks_R2 | Maks_Senaryo
+              SMOGN+STGP-EF | Max_R2 | Max_Senaryo
     """
     pivot = df_long.pivot_table(
         index=['Veri Seti', 'Hedef', 'Algoritma'],
@@ -403,10 +402,58 @@ def save_wide_results(df_long, path):
     cols = [s for s in SCENARIO_ORDER if s in pivot.columns]
     pivot = pivot.reindex(columns=cols)
 
-    pivot['Maks_R2'] = pivot[cols].max(axis=1)
-    pivot['Maks_Senaryo'] = pivot[cols].idxmax(axis=1)
+    pivot['Max_R2'] = pivot[cols].max(axis=1)
+    pivot['Max_Senaryo'] = pivot[cols].idxmax(axis=1)
 
     wide = pivot.reset_index()
     wide = wide.sort_values(['Veri Seti', 'Hedef', 'Algoritma']).reset_index(drop=True)
     wide.to_csv(path, index=False, float_format='%.6f')
+    save_comparison_summary(wide, path)
     return wide
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  Karşılaştırma Özeti — CSV'ye Ekle
+# ═══════════════════════════════════════════════════════════════════
+def save_comparison_summary(wide_df, path):
+    """
+    Geniş formattaki sonuç tablosunu okuyup üç gruplu karşılaştırma özetini
+    CSV dosyasının sonuna ekler:
+      1) Senaryoya göre
+      2) Algoritmaya göre
+      3) Senaryo + Algoritma kombinasyonuna göre
+    """
+    scenarios = ['Base', 'SMOGN', 'STGP-EF', 'SMOGN+STGP-EF']
+    # wide_df içinde gerçekten var olan senaryo sütunlarını kullan
+    cols = [s for s in scenarios if s in wide_df.columns]
+
+    with open(path, 'a', encoding='utf-8-sig', newline='') as f:
+
+        # ── 1. Senaryoya Göre Karşılaştırma ─────────────────────
+        f.write('\n')
+        f.write('SENARYO BAZLI KARSILASTIRMA\n')
+        f.write('Senaryo,Kazanma_Sayisi,Kazanma_Orani_%,Senaryo_Ort_R2,Kazananlar_Ort_Maks_R2\n')
+        for s in cols:
+            kazanma = int((wide_df['Max_Senaryo'] == s).sum())
+            oran    = round(kazanma / len(wide_df) * 100, 2)
+            ort_s   = round(wide_df[s].mean(), 6)
+            mask    = wide_df['Max_Senaryo'] == s
+            ort_m   = round(wide_df.loc[mask, 'Max_R2'].mean(), 6) if kazanma > 0 else ''
+            f.write(f'{s},{kazanma},{oran},{ort_s},{ort_m}\n')
+
+        # ── 2. Algoritmaya Göre Karşılaştırma ───────────────────
+        f.write('\n')
+        f.write('ALGORITMA BAZLI KARSILASTIRMA\n')
+        header = ('Algoritma,Ort_Base,Ort_SMOGN,Ort_STGP-EF,Ort_SMOGN+STGP-EF,'
+                  'Ort_Max_R2,En_Iyi_Senaryo,'
+                  'Kazanma_Base,Kazanma_SMOGN,Kazanma_STGP-EF,Kazanma_SMOGN+STGP-EF\n')
+        f.write(header)
+        for alg in sorted(wide_df['Algoritma'].unique()):
+            grp  = wide_df[wide_df['Algoritma'] == alg]
+            ortalamalar = [round(grp[s].mean(), 6) for s in cols]
+            ort_maks    = round(grp['Max_R2'].mean(), 6)
+            en_iyi      = grp['Max_Senaryo'].mode()[0]
+            wins        = grp['Max_Senaryo'].value_counts().to_dict()
+            w_vals      = [wins.get(s, 0) for s in cols]
+            row = [alg] + ortalamalar + [ort_maks, en_iyi] + w_vals
+            f.write(','.join(str(x) for x in row) + '\n')

@@ -22,17 +22,13 @@ except ImportError:
     pass
 
 from sklearn.ensemble import (
-    RandomForestRegressor, ExtraTreesRegressor,
+    ExtraTreesRegressor,
     AdaBoostRegressor, GradientBoostingRegressor
 )
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import r2_score, mean_absolute_error, mean_squared_error
-from sklearn.base import clone
 from sklearn.preprocessing import StandardScaler
-from xgboost import XGBRegressor
-from lightgbm import LGBMRegressor
-from catboost import CatBoostRegressor
-from gplearn.genetic import SymbolicTransformer
+from gplearn.genetic import SymbolicTransformer, SymbolicRegressor
 
 # ── gplearn uyumluluk yaması (sklearn 1.6+) ──────────────────
 # sklearn 1.6+ __sklearn_tags__ MRO zinciri gplearn ile uyumsuz;
@@ -74,17 +70,27 @@ pd.set_option('display.float_format', '{:.4f}'.format)
 def get_regressors():
     """Kullanılacak regresyon algoritmalarını döndürür."""
     return {
-        'RF': RandomForestRegressor(n_estimators=200, n_jobs=-1, random_state=42),
-        'ET': ExtraTreesRegressor(n_estimators=200, n_jobs=-1, random_state=42),
         'AdaBoost': AdaBoostRegressor(n_estimators=200, random_state=42),
+        'GP': SymbolicRegressor(
+            generations=20,
+            population_size=1000,
+            function_set=['add', 'sub', 'mul', 'div', 'sqrt', 'log', 'abs', 'neg'],
+            parsimony_coefficient=0.005,
+            max_samples=0.9,
+            verbose=0,
+            random_state=42,
+            n_jobs=1
+        ),
+        'EF': EvolutionaryForestRegressor(
+            n_gen=20,
+            n_pop=200,
+            basic_primitives='optimal',
+            verbose=False,
+            random_state=42,
+            n_process=1
+        ),
         'GBDT': GradientBoostingRegressor(n_estimators=200, random_state=42),
-        'DART': LGBMRegressor(n_jobs=1, n_estimators=200, boosting_type='dart',
-                              verbose=-1, random_state=42),
-        'XGBoost': XGBRegressor(n_jobs=1, n_estimators=200, verbosity=0, random_state=42),
-        'LightGBM': LGBMRegressor(n_jobs=1, n_estimators=200, verbose=-1, random_state=42),
-        'CatBoost': CatBoostRegressor(n_estimators=200, thread_count=1,
-                                      verbose=False, allow_writing_files=False,
-                                      random_seed=42),
+        'ET': ExtraTreesRegressor(n_estimators=200, n_jobs=-1, random_state=42),
     }
 
 
@@ -140,7 +146,7 @@ def apply_smogn(X_train, y_train):
             X_aug = df_augmented[col_names].values.astype(np.float64)
             y_aug = df_augmented['target'].values.astype(np.float64)
             return X_aug, y_aug
-        except (ValueError, Exception):
+        except Exception:
             continue
 
     raise ValueError("SMOGN: tüm relevanslık stratejileri başarısız oldu")
@@ -202,9 +208,8 @@ def evaluate_regressors(X_train, y_train, X_test, y_test):
 
     for name, model in regressors.items():
         try:
-            m = clone(model)
-            m.fit(X_train, y_train)
-            score = r2_score(y_test, m.predict(X_test))
+            model.fit(X_train, y_train)
+            score = r2_score(y_test, model.predict(X_test))
             results[name] = round(score, 6)
         except Exception as e:
             print(f"  Hata ({name}): {e}")
@@ -230,10 +235,12 @@ def run_all_scenarios(df, input_cols, target_col):
 
     X_train, X_test, y_train, y_test, _, _ = prepare_data(df, input_cols, target_col)
     all_results = {}
+    X_smogn, y_smogn = None, None
 
     # ── 1) Base ─────────────────────────────────────────────────
     print("  [1/4] Base eğitim...")
     all_results['Base'] = evaluate_regressors(X_train, y_train, X_test, y_test)
+    nan_results = {name: np.nan for name in all_results['Base']}
 
     # ── 2) SMOGN ────────────────────────────────────────────────
     print("  [2/4] SMOGN eğitim...")
@@ -242,7 +249,7 @@ def run_all_scenarios(df, input_cols, target_col):
         all_results['SMOGN'] = evaluate_regressors(X_smogn, y_smogn, X_test, y_test)
     except Exception as e:
         print(f"    SMOGN hatası: {e}")
-        all_results['SMOGN'] = {name: np.nan for name in get_regressors()}
+        all_results['SMOGN'] = nan_results
 
     # ── 3) STGP-EF ─────────────────────────────────────────────
     print("  [3/4] STGP-EF eğitim...")
@@ -251,19 +258,20 @@ def run_all_scenarios(df, input_cols, target_col):
         all_results['STGP-EF'] = evaluate_regressors(X_tr_ef, y_train, X_te_ef, y_test)
     except Exception as e:
         print(f"    STGP-EF hatası: {e}")
-        all_results['STGP-EF'] = {name: np.nan for name in get_regressors()}
+        all_results['STGP-EF'] = nan_results
 
     # ── 4) SMOGN + STGP-EF ─────────────────────────────────────
     print("  [4/4] SMOGN + STGP-EF eğitim...")
     try:
-        X_smogn2, y_smogn2 = apply_smogn(X_train, y_train)
-        X_smogn_ef, X_te_ef2 = apply_stgp_ef(X_smogn2, y_smogn2, X_test)
+        if X_smogn is None:
+            X_smogn, y_smogn = apply_smogn(X_train, y_train)
+        X_smogn_ef, X_te_ef2 = apply_stgp_ef(X_smogn, y_smogn, X_test)
         all_results['SMOGN+STGP-EF'] = evaluate_regressors(
-            X_smogn_ef, y_smogn2, X_te_ef2, y_test
+            X_smogn_ef, y_smogn, X_te_ef2, y_test
         )
     except Exception as e:
         print(f"    SMOGN+STGP-EF hatası: {e}")
-        all_results['SMOGN+STGP-EF'] = {name: np.nan for name in get_regressors()}
+        all_results['SMOGN+STGP-EF'] = nan_results
 
     print("  Tamamlandı.\n")
     return all_results
@@ -344,8 +352,7 @@ def compare_scenarios(results_df):
         columns='Senaryo',
         values='R2_Score'
     )
-    scenario_order = ['Base', 'SMOGN', 'STGP-EF', 'SMOGN+STGP-EF']
-    pivot = pivot.reindex(columns=[s for s in scenario_order if s in pivot.columns])
+    pivot = pivot.reindex(columns=[s for s in SCENARIO_ORDER if s in pivot.columns])
     return pivot
 
 
@@ -370,8 +377,7 @@ def target_summary(results_df, target_col):
         columns='Senaryo',
         values='R2_Score'
     )
-    scenario_order = ['Base', 'SMOGN', 'STGP-EF', 'SMOGN+STGP-EF']
-    pivot = pivot.reindex(columns=[s for s in scenario_order if s in pivot.columns])
+    pivot = pivot.reindex(columns=[s for s in SCENARIO_ORDER if s in pivot.columns])
     return pivot
 
 

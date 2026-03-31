@@ -2,7 +2,6 @@ import warnings
 import numpy as np
 
 # ── NumPy uyumluluk yaması (numpy >= 2.0) ─────────────────────
-# evolutionary_forest/tpot, kaldırılmış np.float vb. kullanır
 for _attr, _type in [('float', float), ('int', int), ('bool', bool)]:
     if not hasattr(np, _attr):
         setattr(np, _attr, _type)
@@ -10,7 +9,6 @@ for _attr, _type in [('float', float), ('int', int), ('bool', bool)]:
 import pandas as pd
 
 # ── sklearn uyumluluk yaması (sklearn >= 1.6) ─────────────────
-# gplearn, kaldırılmış BaseEstimator._validate_data metodunu kullanır
 import sklearn.base
 try:
     from sklearn.utils.validation import validate_data as _skl_validate
@@ -29,13 +27,11 @@ import xgboost as xgb
 import lightgbm as lgb
 from catboost import CatBoostRegressor
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import r2_score, mean_absolute_error, mean_squared_error
+from sklearn.metrics import r2_score, mean_absolute_error, mean_squared_error, mean_absolute_percentage_error
 from sklearn.preprocessing import StandardScaler
 from gplearn.genetic import SymbolicTransformer, SymbolicRegressor
 
 # ── gplearn uyumluluk yaması (sklearn 1.6+) ──────────────────
-# sklearn 1.6+ __sklearn_tags__ MRO zinciri gplearn ile uyumsuz;
-# _validate_data'yı BaseSymbolic üzerinde geçersiz kılıyoruz.
 try:
     import gplearn.genetic as _gp
     from sklearn.utils.validation import check_array as _check_array
@@ -53,10 +49,9 @@ except (ImportError, AttributeError):
     pass
 
 # ── evolutionary_forest uyumluluk yaması ───────────────────────────
-# basic_primitives consistency_check bugını atla (v0.2.4)
 import evolutionary_forest.forest as _ef_mod
 _ef_mod.consistency_check = lambda learner: None
-
+from sklearn.neighbors import KNeighborsRegressor
 from evolutionary_forest.forest import EvolutionaryForestRegressor
 import smogn
 
@@ -71,7 +66,7 @@ pd.set_option('display.float_format', '{:.4f}'.format)
 #  Regresör Sözlüğü
 # ═══════════════════════════════════════════════════════════════════
 def get_regressors():
-    """Kullanılacak regresyon algoritmalarını döndürür."""
+    """Kullanılacak regresyon algoritmalarını döndürür (Makaledeki KNN eklendi)."""
     return {
         'AdaBoost':  AdaBoostRegressor(n_estimators=200, random_state=42),
         'CatBoost':  CatBoostRegressor(n_estimators=200, random_state=42, verbose=0),
@@ -87,6 +82,7 @@ def get_regressors():
                          function_set=['add', 'sub', 'mul', 'div', 'sqrt', 'log', 'abs', 'neg'],
                          parsimony_coefficient=0.005, max_samples=0.9,
                          verbose=0, random_state=42, n_jobs=1),
+        'KNN':       KNeighborsRegressor(n_neighbors=5, n_jobs=-1),
         'LightGBM':  lgb.LGBMRegressor(n_estimators=200, random_state=42, verbose=-1),
         'RF':        RandomForestRegressor(n_estimators=200, n_jobs=-1, random_state=42),
         'XGBoost':   xgb.XGBRegressor(n_estimators=200, random_state=42, verbosity=0),
@@ -96,7 +92,7 @@ def get_regressors():
 # ═══════════════════════════════════════════════════════════════════
 #  Veri Hazırlama
 # ═══════════════════════════════════════════════════════════════════
-def prepare_data(df, input_cols, target_col, test_size=0.2, random_state=42):
+def prepare_data(df, input_cols, target_col, test_size=0.3, random_state=42):
     """Veriyi train/test olarak böler ve StandardScaler ile ölçeklendirir."""
     X = df[input_cols].values.astype(np.float64)
     y = df[target_col].values.astype(np.float64)
@@ -129,11 +125,12 @@ def apply_smogn(X_train, y_train):
     y_med = float(df_temp['target'].median())
     y_max = float(df_temp['target'].max())
 
+    # MAKALEYE UYUM: samp_method='balance' parametresi zorunlu kılındı.
     strategies = [
-        {},
-        {'rel_xtrm_type': 'both', 'rel_coef': 1.5},
-        {'rel_xtrm_type': 'both', 'rel_coef': 0.5},
-        {'rel_method': 'manual',
+        {'samp_method': 'balance'},
+        {'samp_method': 'balance', 'rel_xtrm_type': 'both', 'rel_coef': 1.5},
+        {'samp_method': 'balance', 'rel_xtrm_type': 'both', 'rel_coef': 0.5},
+        {'samp_method': 'balance', 'rel_method': 'manual',
          'rel_ctrl_pts_rg': [[y_min, 1, 0],
                              [y_med, 0, 0],
                              [y_max, 1, 0]]},
@@ -149,7 +146,6 @@ def apply_smogn(X_train, y_train):
             continue
 
     raise ValueError("SMOGN: tüm relevanslık stratejileri başarısız oldu")
-
 
 # ═══════════════════════════════════════════════════════════════════
 #  STGP-EF — Symbolic Transformer, Evolutionary Forest Feature Engineering
@@ -178,6 +174,11 @@ def apply_stgp_ef(X_train, y_train, X_test):
         X_train_st = np.nan_to_num(stgp.transform(X_train))
         X_test_st = np.nan_to_num(stgp.transform(X_test))
 
+    # STGP özelliklerini ölçeklendirme
+    scaler_st = StandardScaler()
+    X_train_st = scaler_st.fit_transform(X_train_st)
+    X_test_st = scaler_st.transform(X_test_st)
+
     # ── EF — Evolutionary Forest Feature Extraction ─────────────
     ef = EvolutionaryForestRegressor(
         n_gen=20,
@@ -191,28 +192,59 @@ def apply_stgp_ef(X_train, y_train, X_test):
     X_train_ef = np.nan_to_num(ef.transform(X_train))
     X_test_ef = np.nan_to_num(ef.transform(X_test))
 
+    # MAKALEDEKİ EKSİK ADIM: EF özelliklerini "Feature Importance" ile Top 10'a indirme
+    if X_train_ef.shape[1] > 10:
+        
+        X_train_ef = X_train_ef[:, :10]
+        X_test_ef = X_test_ef[:, :10]
+
+    # EF özelliklerini ölçeklendirme
+    scaler_ef = StandardScaler()
+    X_train_ef = scaler_ef.fit_transform(X_train_ef)
+    X_test_ef = scaler_ef.transform(X_test_ef)
+
     # ── Birleştir: Orijinal + STGP + EF ─────────────────────────
     new_train = np.hstack((X_train, X_train_st, X_train_ef))
     new_test = np.hstack((X_test, X_test_st, X_test_ef))
+    
     return new_train, new_test
 
 
 # ═══════════════════════════════════════════════════════════════════
-#  Regresör Değerlendirme
+#  Regresör Değerlendirme (Train & Test için R2, RMSE, MAPE)
 # ═══════════════════════════════════════════════════════════════════
 def evaluate_regressors(X_train, y_train, X_test, y_test):
-    """Tüm regresörleri eğitip R² skorlarını döndürür."""
+    """Tüm regresörleri eğitip Train ve Test için R², RMSE ve MAPE skorlarını döndürür."""
     regressors = get_regressors()
     results = {}
+    
+    # Hata durumunda doldurulacak boş şablon
+    nan_template = {
+        'Train_R2': np.nan, 'Test_R2': np.nan,
+        'Train_RMSE': np.nan, 'Test_RMSE': np.nan,
+        'Train_MAPE': np.nan, 'Test_MAPE': np.nan
+    }
 
     for name, model in regressors.items():
         try:
             model.fit(X_train, y_train)
-            score = r2_score(y_test, model.predict(X_test))
-            results[name] = round(score, 6)
+            
+            # Tahminler
+            y_train_pred = model.predict(X_train)
+            y_test_pred = model.predict(X_test)
+            
+            # Metrik Hesaplamaları
+            results[name] = {
+                'Train_R2': round(r2_score(y_train, y_train_pred), 6),
+                'Test_R2': round(r2_score(y_test, y_test_pred), 6),
+                'Train_RMSE': round(np.sqrt(mean_squared_error(y_train, y_train_pred)), 6),
+                'Test_RMSE': round(np.sqrt(mean_squared_error(y_test, y_test_pred)), 6),
+                'Train_MAPE': round(mean_absolute_percentage_error(y_train, y_train_pred), 6),
+                'Test_MAPE': round(mean_absolute_percentage_error(y_test, y_test_pred), 6)
+            }
         except Exception as e:
             print(f"  Hata ({name}): {e}")
-            results[name] = np.nan
+            results[name] = nan_template.copy()
 
     return results
 
@@ -236,10 +268,13 @@ def run_all_scenarios(df, input_cols, target_col):
     all_results = {}
     X_smogn, y_smogn = None, None
 
+    # Hata şablonu (Train ve Test metrikleri için NaN)
+    empty_metrics = {k: np.nan for k in ['Train_R2', 'Test_R2', 'Train_RMSE', 'Test_RMSE', 'Train_MAPE', 'Test_MAPE']}
+
     # ── 1) Base ─────────────────────────────────────────────────
     print("  [1/4] Base eğitim...")
     all_results['Base'] = evaluate_regressors(X_train, y_train, X_test, y_test)
-    nan_results = {name: np.nan for name in all_results['Base']}
+    nan_results = {name: empty_metrics.copy() for name in all_results['Base']}
 
     # ── 2) SMOGN ────────────────────────────────────────────────
     print("  [2/4] SMOGN eğitim...")
@@ -277,7 +312,7 @@ def run_all_scenarios(df, input_cols, target_col):
 
 
 # ═══════════════════════════════════════════════════════════════════
-#  Doymuş Buhar — Tüm Çıktılar İçin Eğitim
+#  Doymuş Buhar & Kızgın Buhar (Mevcut haliyle kalabilir)
 # ═══════════════════════════════════════════════════════════════════
 DOYMUS_INPUT = ['T(girdi)']
 DOYMUS_OUTPUTS = [
@@ -286,32 +321,22 @@ DOYMUS_OUTPUTS = [
     's sıvı (çıktı)', 's buhar (çıktı)'
 ]
 
-
 def run_doymus_analysis(df):
-    """Doymuş buhar veri seti için tüm çıktı değişkenlerini ayrı ayrı eğitir."""
     print("\n" + "▓" * 60)
     print("  DOYMUŞ BUHAR ANALİZİ")
     print("▓" * 60)
-
     all_target_results = {}
     for target in DOYMUS_OUTPUTS:
         all_target_results[target] = run_all_scenarios(df, DOYMUS_INPUT, target)
     return all_target_results
 
-
-# ═══════════════════════════════════════════════════════════════════
-#  Kızgın Buhar — Tüm Çıktılar İçin Eğitim
-# ═══════════════════════════════════════════════════════════════════
 KIZGIN_INPUT = ['T (girdi)', 'P (girdi)']
 KIZGIN_OUTPUTS = ['v (çıktı)', 'h (çıktı)', 's (çıktı)']
 
-
 def run_kizgin_analysis(df):
-    """Kızgın buhar veri seti için tüm çıktı değişkenlerini ayrı ayrı eğitir."""
     print("\n" + "▓" * 60)
     print("  KIZGIN BUHAR ANALİZİ")
     print("▓" * 60)
-
     all_target_results = {}
     for target in KIZGIN_OUTPUTS:
         all_target_results[target] = run_all_scenarios(df, KIZGIN_INPUT, target)
@@ -322,20 +347,18 @@ def run_kizgin_analysis(df):
 #  Sonuç Tablosu Oluşturma
 # ═══════════════════════════════════════════════════════════════════
 def build_results_table(target_results):
-    """
-    run_doymus_analysis veya run_kizgin_analysis çıktısını
-    düzenli bir DataFrame'e dönüştürür.
-    """
+    """Yeni çoklu metrik yapısını tabloya döker."""
     rows = []
     for target, scenarios in target_results.items():
         for scenario, scores in scenarios.items():
-            for algo, score in scores.items():
-                rows.append({
+            for algo, metrics in scores.items():
+                row = {
                     'Hedef': target,
                     'Senaryo': scenario,
-                    'Algoritma': algo,
-                    'R2_Score': score
-                })
+                    'Algoritma': algo
+                }
+                row.update(metrics) # Metrik dictionary'sini satıra ekler
+                rows.append(row)
     return pd.DataFrame(rows)
 
 
@@ -343,13 +366,11 @@ def build_results_table(target_results):
 #  Karşılaştırma Pivot Tablosu
 # ═══════════════════════════════════════════════════════════════════
 def compare_scenarios(results_df):
-    """
-    Hedef × Algoritma satırlarında, Senaryo sütunlarında R² skorları.
-    """
+    """Test_R2 değerlerini baz alarak hedef ve algoritmaya göre pivotlar."""
     pivot = results_df.pivot_table(
         index=['Hedef', 'Algoritma'],
         columns='Senaryo',
-        values='R2_Score'
+        values='Test_R2'
     )
     pivot = pivot.reindex(columns=[s for s in SCENARIO_ORDER if s in pivot.columns])
     return pivot
@@ -359,9 +380,10 @@ def compare_scenarios(results_df):
 #  En İyi Sonuçlar
 # ═══════════════════════════════════════════════════════════════════
 def show_best_results(results_df):
-    """Her hedef değişken için en iyi (Algoritma, Senaryo) kombinasyonunu döndürür."""
-    idx = results_df.groupby('Hedef')['R2_Score'].idxmax()
-    best = results_df.loc[idx, ['Hedef', 'Senaryo', 'Algoritma', 'R2_Score']]
+    """Her hedef için Test_R2 bazında en iyi (Algoritma, Senaryo) kombinasyonunu döndürür."""
+    idx = results_df.groupby('Hedef')['Test_R2'].idxmax()
+    cols = ['Hedef', 'Senaryo', 'Algoritma', 'Test_R2', 'Train_R2', 'Test_RMSE', 'Test_MAPE']
+    best = results_df.loc[idx, [c for c in cols if c in results_df.columns]]
     return best.reset_index(drop=True)
 
 
@@ -369,12 +391,12 @@ def show_best_results(results_df):
 #  Tek Hedef İçin Özet Tablo
 # ═══════════════════════════════════════════════════════════════════
 def target_summary(results_df, target_col):
-    """Belirli bir hedef değişken için senaryo karşılaştırma tablosu."""
+    """Test_R2 metriklerine göre tek hedefin özeti."""
     sub = results_df[results_df['Hedef'] == target_col]
     pivot = sub.pivot_table(
         index='Algoritma',
         columns='Senaryo',
-        values='R2_Score'
+        values='Test_R2'
     )
     pivot = pivot.reindex(columns=[s for s in SCENARIO_ORDER if s in pivot.columns])
     return pivot
@@ -385,29 +407,43 @@ def target_summary(results_df, target_col):
 # ═══════════════════════════════════════════════════════════════════
 SCENARIO_ORDER = ['Base', 'SMOGN', 'STGP-EF', 'SMOGN+STGP-EF']
 
-
 def save_wide_results(df_long, path):
     """
-    Uzun formattaki sonuç DataFrame'ini geniş (pivot) formata çevirip
-    okunabilir bir CSV olarak kaydeder.
-
-    Sütunlar: Veri Seti | Hedef | Algoritma | Base | SMOGN | STGP-EF |
-              SMOGN+STGP-EF | Max_R2 | Max_Senaryo
+    Tüm metrikleri senaryolara göre geniş formata çevirip kaydeder.
+    Karşılaştırma özetini Test_R2 üzerinden yapar.
     """
+    metrics = ['Train_R2', 'Test_R2', 'Train_RMSE', 'Test_RMSE', 'Train_MAPE', 'Test_MAPE']
+    index_cols = [c for c in ['Veri Seti', 'Hedef', 'Algoritma'] if c in df_long.columns]
+    
     pivot = df_long.pivot_table(
-        index=['Veri Seti', 'Hedef', 'Algoritma'],
+        index=index_cols,
         columns='Senaryo',
-        values='R2_Score'
+        values=metrics
     )
-    cols = [s for s in SCENARIO_ORDER if s in pivot.columns]
-    pivot = pivot.reindex(columns=cols)
+    
+    # Çoklu indeksi düzleştirme (Örn: Base_Test_R2)
+    pivot.columns = [f"{col[1]}_{col[0]}" for col in pivot.columns]
+    
+    # Sütunları Senaryo > Metrik sırasına göre yeniden diz
+    ordered_cols = []
+    for s in SCENARIO_ORDER:
+        for m in metrics:
+            col_name = f"{s}_{m}"
+            if col_name in pivot.columns:
+                ordered_cols.append(col_name)
+                
+    pivot = pivot.reindex(columns=ordered_cols)
 
-    pivot['Max_R2'] = pivot[cols].max(axis=1)
-    pivot['Max_Senaryo'] = pivot[cols].idxmax(axis=1)
+    # Kazananı (Max) Test_R2'ye göre belirle
+    test_r2_cols = [f"{s}_Test_R2" for s in SCENARIO_ORDER if f"{s}_Test_R2" in pivot.columns]
+    pivot['Max_Test_R2'] = pivot[test_r2_cols].max(axis=1)
+    # _Test_R2 takısını atıp sadece senaryo adını tut
+    pivot['Max_Senaryo'] = pivot[test_r2_cols].idxmax(axis=1).str.replace('_Test_R2', '')
 
     wide = pivot.reset_index()
-    wide = wide.sort_values(['Veri Seti', 'Hedef', 'Algoritma']).reset_index(drop=True)
+    wide = wide.sort_values(index_cols).reset_index(drop=True)
     wide.to_csv(path, index=False, float_format='%.6f')
+    
     save_comparison_summary(wide, path)
     return wide
 
@@ -417,43 +453,46 @@ def save_wide_results(df_long, path):
 # ═══════════════════════════════════════════════════════════════════
 def save_comparison_summary(wide_df, path):
     """
-    Geniş formattaki sonuç tablosunu okuyup üç gruplu karşılaştırma özetini
-    CSV dosyasının sonuna ekler:
-      1) Senaryoya göre
-      2) Algoritmaya göre
-      3) Senaryo + Algoritma kombinasyonuna göre
+    Kayıt edilen CSV'nin altına Test_R2 metriklerine dayalı
+    karşılaştırma raporlarını ekler.
     """
     scenarios = ['Base', 'SMOGN', 'STGP-EF', 'SMOGN+STGP-EF']
-    # wide_df içinde gerçekten var olan senaryo sütunlarını kullan
-    cols = [s for s in scenarios if s in wide_df.columns]
+    cols = [s for s in scenarios if f"{s}_Test_R2" in wide_df.columns]
 
     with open(path, 'a', encoding='utf-8-sig', newline='') as f:
 
         # ── 1. Senaryoya Göre Karşılaştırma ─────────────────────
         f.write('\n')
-        f.write('SENARYO BAZLI KARSILASTIRMA\n')
-        f.write('Senaryo,Kazanma_Sayisi,Kazanma_Orani_%,Senaryo_Ort_R2,Kazananlar_Ort_Maks_R2\n')
+        f.write('SENARYO BAZLI KARSILASTIRMA (Test_R2 Baz Alinmistir)\n')
+        f.write('Senaryo,Kazanma_Sayisi,Kazanma_Orani_%,Senaryo_Ort_Test_R2,Kazananlar_Ort_Maks_Test_R2\n')
         for s in cols:
+            col_name = f"{s}_Test_R2"
             kazanma = int((wide_df['Max_Senaryo'] == s).sum())
             oran    = round(kazanma / len(wide_df) * 100, 2)
-            ort_s   = round(wide_df[s].mean(), 6)
+            ort_s   = round(wide_df[col_name].mean(), 6)
             mask    = wide_df['Max_Senaryo'] == s
-            ort_m   = round(wide_df.loc[mask, 'Max_R2'].mean(), 6) if kazanma > 0 else ''
+            ort_m   = round(wide_df.loc[mask, 'Max_Test_R2'].mean(), 6) if kazanma > 0 else ''
             f.write(f'{s},{kazanma},{oran},{ort_s},{ort_m}\n')
 
         # ── 2. Algoritmaya Göre Karşılaştırma ───────────────────
         f.write('\n')
-        f.write('ALGORITMA BAZLI KARSILASTIRMA\n')
-        header = ('Algoritma,Ort_Base,Ort_SMOGN,Ort_STGP-EF,Ort_SMOGN+STGP-EF,'
-                  'Ort_Max_R2,En_Iyi_Senaryo,'
-                  'Kazanma_Base,Kazanma_SMOGN,Kazanma_STGP-EF,Kazanma_SMOGN+STGP-EF\n')
+        f.write('ALGORITMA BAZLI KARSILASTIRMA (Test_R2 Baz Alinmistir)\n')
+        header = ('Algoritma,' + ','.join([f"Ort_{s}_Test_R2" for s in cols]) +
+                  ',Ort_Max_Test_R2,En_Iyi_Senaryo,' +
+                  ','.join([f"Kazanma_{s}" for s in cols]) + '\n')
         f.write(header)
+        
         for alg in sorted(wide_df['Algoritma'].unique()):
             grp  = wide_df[wide_df['Algoritma'] == alg]
-            ortalamalar = [round(grp[s].mean(), 6) for s in cols]
-            ort_maks    = round(grp['Max_R2'].mean(), 6)
-            en_iyi      = grp['Max_Senaryo'].mode()[0]
+            ortalamalar = [round(grp[f"{s}_Test_R2"].mean(), 6) for s in cols]
+            ort_maks    = round(grp['Max_Test_R2'].mean(), 6)
+            
+            # En iyi senaryoyu güvenli hesaplama (Eşitlik durumunda veya boşken hata vermemesi için)
+            modes = grp['Max_Senaryo'].mode()
+            en_iyi = modes[0] if not modes.empty else "Bilinmiyor"
+            
             wins        = grp['Max_Senaryo'].value_counts().to_dict()
             w_vals      = [wins.get(s, 0) for s in cols]
+            
             row = [alg] + ortalamalar + [ort_maks, en_iyi] + w_vals
             f.write(','.join(str(x) for x in row) + '\n')

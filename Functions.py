@@ -113,40 +113,36 @@ def prepare_data(df, input_cols, target_col, test_size=0.3, random_state=42):
 
 
 # ═══════════════════════════════════════════════════════════════════
-#  SMOGN — Data Augmentation
+#  SMOGN — Data Augmentation (Makaleye Göre Düzenlenmiş)
 # ═══════════════════════════════════════════════════════════════════
 def apply_smogn(X_train, y_train):
-    """SMOGN ile eğitim verisine veri artırma (data augmentation) uygular."""
+    """
+    SMOGN ile eğitim verisine veri artırma (data augmentation) uygular.
+    Makalede belirtildiği üzere 'hibrit' yaklaşım benimsenmiş ve 
+    örnekleme yöntemi olarak 'balance' seçilmiştir.
+    """
     col_names = [f"x{i}" for i in range(X_train.shape[1])]
     df_temp = pd.DataFrame(X_train, columns=col_names)
     df_temp['target'] = y_train
 
-    y_min = float(df_temp['target'].min())
-    y_med = float(df_temp['target'].median())
-    y_max = float(df_temp['target'].max())
-
-    # MAKALEYE UYUM: samp_method='balance' parametresi zorunlu kılındı.
-    strategies = [
-        {'samp_method': 'balance'},
-        {'samp_method': 'balance', 'rel_xtrm_type': 'both', 'rel_coef': 1.5},
-        {'samp_method': 'balance', 'rel_xtrm_type': 'both', 'rel_coef': 0.5},
-        {'samp_method': 'balance', 'rel_method': 'manual',
-         'rel_ctrl_pts_rg': [[y_min, 1, 0],
-                             [y_med, 0, 0],
-                             [y_max, 1, 0]]},
-    ]
-
-    for params in strategies:
-        try:
-            df_augmented = smogn.smoter(data=df_temp, y='target', **params)
-            X_aug = df_augmented[col_names].values.astype(np.float64)
-            y_aug = df_augmented['target'].values.astype(np.float64)
-            return X_aug, y_aug
-        except Exception:
-            continue
-
-    raise ValueError("SMOGN: tüm relevanslık stratejileri başarısız oldu")
-
+    try:
+        # Makalede belirtilen spesifik ayar: samp_method='balance'
+        # Bu ayar, hem over-sampling hem de under-sampling stratejilerini 
+        # birleştirerek hibrit bir dengeleme yapar.
+        df_augmented = smogn.smoter(
+            data=df_temp, 
+            y='target', 
+            samp_method='balance'
+        )
+        
+        X_aug = df_augmented[col_names].values.astype(np.float64)
+        y_aug = df_augmented['target'].values.astype(np.float64)
+        
+        return X_aug, y_aug
+        
+    except Exception as e:
+        raise ValueError(f"SMOGN işlemi 'balance' parametresi ile başarısız oldu: {e}")
+    
 # ═══════════════════════════════════════════════════════════════════
 #  STGP-EF — Symbolic Transformer, Evolutionary Forest Feature Engineering
 # ═══════════════════════════════════════════════════════════════════

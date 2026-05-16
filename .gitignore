@@ -1,2 +1,4 @@
 .venv
 R515B_Ozellikleri
+__pycache__
+catboost_info

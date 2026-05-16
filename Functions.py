@@ -7,6 +7,7 @@ import numpy as np
 import pandas as pd
 import shap
 import matplotlib.pyplot as plt
+from contextlib import redirect_stdout
 
 # Sklearn imports
 from sklearn.ensemble import (
@@ -218,9 +219,11 @@ def apply_stgp_ef(X_train, y_train, X_test):
         random_state=42,
         n_process=1
     )
-    ef.fit(X_train, y_train)
-    X_train_ef = np.nan_to_num(ef.transform(X_train))
-    X_test_ef = np.nan_to_num(ef.transform(X_test))
+
+    with open(os.devnull, 'w') as f, redirect_stdout(f):
+        ef.fit(X_train, y_train)
+        X_train_ef = np.nan_to_num(ef.transform(X_train))
+        X_test_ef = np.nan_to_num(ef.transform(X_test))
 
     # MAKALEDEKİ EKSİK ADIM: EF özelliklerini "Feature Importance" ile Top 10'a indirme
     if X_train_ef.shape[1] > 10:
@@ -256,11 +259,13 @@ def evaluate_regressors(X_train, y_train, X_test, y_test):
 
     for name, model in regressors.items():
         try:
-            model.fit(X_train, y_train)
-            
-            # Tahminler
-            y_train_pred = model.predict(X_train)
-            y_test_pred = model.predict(X_test)
+            # Model eğitimindeki ve tahminindeki gizli printleri engelle
+            with open(os.devnull, 'w') as f, redirect_stdout(f):
+                model.fit(X_train, y_train)
+                
+                # Tahminler
+                y_train_pred = model.predict(X_train)
+                y_test_pred = model.predict(X_test)
             
             # Metrik Hesaplamaları
             results[name] = {
@@ -272,6 +277,7 @@ def evaluate_regressors(X_train, y_train, X_test, y_test):
                 'Test_MAPE': round(mean_absolute_percentage_error(y_test, y_test_pred), 6)
             }
         except Exception as e:
+            # Sadece hataları yazdır, eğitim süreci sessiz kalsın
             print(f"  Hata ({name}): {e}")
             results[name] = nan_template.copy()
 
@@ -279,7 +285,7 @@ def evaluate_regressors(X_train, y_train, X_test, y_test):
 
 
 # ═══════════════════════════════════════════════════════════════════
-#  SENERAY ANALİZİ — TEK HEDEF İÇİN
+#  SENARYO ANALİZİ — TEK HEDEF İÇİN
 # ═══════════════════════════════════════════════════════════════════
 def run_all_scenarios(df, input_cols, target_col):
     """

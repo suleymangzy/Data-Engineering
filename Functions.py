@@ -1,5 +1,5 @@
 # ═══════════════════════════════════════════════════════════════════
-#  İMPORT BÖLÜMÜ
+#  IMPORT SECTION
 # ═══════════════════════════════════════════════════════════════════
 import warnings
 import os
@@ -31,15 +31,15 @@ from evolutionary_forest.forest import EvolutionaryForestRegressor
 import smogn
 
 # ═══════════════════════════════════════════════════════════════════
-#  UYUMLULUK YAMALARI (Compatibility Patches)
+#  COMPATIBILITY PATCHES
 # ═══════════════════════════════════════════════════════════════════
 
-# ── NumPy uyumluluk yaması (numpy >= 2.0) ─────────────────────────
+# ── NumPy compatibility patch (numpy >= 2.0) ──────────────────────
 for _attr, _type in [('float', float), ('int', int), ('bool', bool)]:
     if not hasattr(np, _attr):
         setattr(np, _attr, _type)
 
-# ── sklearn uyumluluk yaması (sklearn >= 1.6) ────────────────────
+# ── sklearn compatibility patch (sklearn >= 1.6) ────────────────────
 import sklearn.base
 try:
     from sklearn.utils.validation import validate_data as _skl_validate
@@ -50,7 +50,7 @@ try:
 except ImportError:
     pass
 
-# ── gplearn uyumluluk yaması (sklearn 1.6+) ──────────────────────
+# ── gplearn compatibility patch (sklearn 1.6+) ──────────────────────
 try:
     import gplearn.genetic as _gp
     from sklearn.utils.validation import check_array as _check_array
@@ -67,12 +67,12 @@ try:
 except (ImportError, AttributeError):
     pass
 
-# ── evolutionary_forest uyumluluk yaması ──────────────────────────
+# ── evolutionary_forest compatibility patch ──────────────────────────
 import evolutionary_forest.forest as _ef_mod
 _ef_mod.consistency_check = lambda learner: None
 
 # ═══════════════════════════════════════════════════════════════════
-#  YAPILAN AYARLAR
+#  CONFIGURATION SETTINGS
 # ═══════════════════════════════════════════════════════════════════
 warnings.filterwarnings('ignore')
 np.seterr(divide='ignore', invalid='ignore')
@@ -82,25 +82,25 @@ pd.set_option('display.float_format', '{:.4f}'.format)
 
 
 # ═══════════════════════════════════════════════════════════════════
-#  SABİT DEĞERLERİ & AYARLAR
+#  CONSTANTS AND CONFIGURATION
 # ═══════════════════════════════════════════════════════════════════
 SCENARIO_ORDER = ['Base', 'SMOGN', 'STGP-EF', 'SMOGN+STGP-EF']
 
-DOYMUS_INPUT = ['T(girdi)']
-DOYMUS_OUTPUTS = [
-    'P(çıktı)', 'v sıvı (çıktı)', 'v buhar (çıktı)',
-    'h sıvı (çıktı)', 'h buhar (çıktı)',
-    's sıvı (çıktı)', 's buhar (çıktı)'
+SATURATED_INPUTS = ['T_input']
+SATURATED_OUTPUTS = [
+    'P_output', 'v_liquid_output', 'v_vapor_output',
+    'h_liquid_output', 'h_vapor_output',
+    's_liquid_output', 's_vapor_output'
 ]
 
-KIZGIN_INPUT = ['T (girdi)', 'P (girdi)']
-KIZGIN_OUTPUTS = ['v (çıktı)', 'h (çıktı)', 's (çıktı)']
+SUPERHEATED_INPUTS = ['T_input', 'P_input']
+SUPERHEATED_OUTPUTS = ['v_output', 'h_output', 's_output']
 
 # ═══════════════════════════════════════════════════════════════════
-#  REGRESÖR SÖZLÜĞÜ
+#  REGRESSOR DICTIONARY
 # ═══════════════════════════════════════════════════════════════════
 def get_regressors():
-    """Kullanılacak regresyon algoritmalarını döndürür (Makaledeki KNN eklendi)."""
+    """Returns regression algorithms to be used (KNN added from paper)."""
     return {
         'AdaBoost':  AdaBoostRegressor(n_estimators=200, random_state=42),
         'CatBoost':  CatBoostRegressor(n_estimators=200, random_state=42, verbose=0),
@@ -124,10 +124,10 @@ def get_regressors():
 
 
 # ═══════════════════════════════════════════════════════════════════
-#  VERİ HAZIRLAMAVERILERI VERİ BÖLME VE ÖLÇEKLENDIRME
+#  DATA PREPARATION - TRAIN/TEST SPLIT AND SCALING
 # ═══════════════════════════════════════════════════════════════════
 def prepare_data(df, input_cols, target_col, test_size=0.3, random_state=42):
-    """Veriyi train/test olarak böler ve StandardScaler ile ölçeklendirir."""
+    """Splits data into train/test sets and applies StandardScaler normalization."""
     X = df[input_cols].values.astype(np.float64)
     y = df[target_col].values.astype(np.float64)
 
@@ -147,22 +147,20 @@ def prepare_data(df, input_cols, target_col, test_size=0.3, random_state=42):
 
 
 # ═══════════════════════════════════════════════════════════════════
-#  ÖZNİTELİK MÜHENDİSLİĞİ — SMOGN (Veri Artırma)
+#  FEATURE ENGINEERING - SMOGN (Data Augmentation)
 # ═══════════════════════════════════════════════════════════════════
 def apply_smogn(X_train, y_train):
     """
-    SMOGN ile eğitim verisine veri artırma (data augmentation) uygular.
-    Makalede belirtildiği üzere 'hibrit' yaklaşım benimsenmiş ve 
-    örnekleme yöntemi olarak 'balance' seçilmiştir.
+    Applies data augmentation to training data using SMOGN.
+    Uses hybrid approach with 'balance' sampling method as specified in paper.
     """
     col_names = [f"x{i}" for i in range(X_train.shape[1])]
     df_temp = pd.DataFrame(X_train, columns=col_names)
     df_temp['target'] = y_train
 
     try:
-        # Makalede belirtilen spesifik ayar: samp_method='balance'
-        # Bu ayar, hem over-sampling hem de under-sampling stratejilerini 
-        # birleştirerek hibrit bir dengeleme yapar.
+        # Paper-specified configuration: samp_method='balance'
+        # This combines over-sampling and under-sampling for hybrid balancing.
         df_augmented = smogn.smoter(
             data=df_temp, 
             y='target', 
@@ -175,18 +173,18 @@ def apply_smogn(X_train, y_train):
         return X_aug, y_aug
         
     except Exception as e:
-        raise ValueError(f"SMOGN işlemi 'balance' parametresi ile başarısız oldu: {e}")
+        raise ValueError(f"SMOGN operation failed with 'balance' parameter: {e}")
 
 
 # ═══════════════════════════════════════════════════════════════════
-#  ÖZNİTELİK MÜHENDİSLİĞİ — STGP-EF (Feature Engineering)
+#  FEATURE ENGINEERING - STGP-EF (Feature Engineering)
 # ═══════════════════════════════════════════════════════════════════
 def apply_stgp_ef(X_train, y_train, X_test):
     """
-    SymbolicTransformer (STGP) ve Evolutionary Forest (EF) ile
-    yeni öznitelikler üretir ve mevcut özelliklere ekler.
+    Generates new features using SymbolicTransformer (STGP) and 
+    Evolutionary Forest (EF), then combines with original features.
     """
-    # ── STGP — Symbolic Transformer Feature Extraction ──────────
+    # ── STGP - Symbolic Transformer Feature Extraction ──────────
     stgp = SymbolicTransformer(
         generations=20,
         population_size=1000,
@@ -205,12 +203,12 @@ def apply_stgp_ef(X_train, y_train, X_test):
         X_train_st = np.nan_to_num(stgp.transform(X_train))
         X_test_st = np.nan_to_num(stgp.transform(X_test))
 
-    # STGP özelliklerini ölçeklendirme
+    # Scale STGP features
     scaler_st = StandardScaler()
     X_train_st = scaler_st.fit_transform(X_train_st)
     X_test_st = scaler_st.transform(X_test_st)
 
-    # ── EF — Evolutionary Forest Feature Extraction ─────────────
+    # ── EF - Evolutionary Forest Feature Extraction ─────────────
     ef = EvolutionaryForestRegressor(
         n_gen=20,
         n_pop=200,
@@ -225,17 +223,17 @@ def apply_stgp_ef(X_train, y_train, X_test):
         X_train_ef = np.nan_to_num(ef.transform(X_train))
         X_test_ef = np.nan_to_num(ef.transform(X_test))
 
-    # MAKALEDEKİ EKSİK ADIM: EF özelliklerini "Feature Importance" ile Top 10'a indirme
+    # Paper missing step: Reduce EF features to Top 10 based on Feature Importance
     if X_train_ef.shape[1] > 10:
         X_train_ef = X_train_ef[:, :10]
         X_test_ef = X_test_ef[:, :10]
 
-    # EF özelliklerini ölçeklendirme
+    # Scale EF features
     scaler_ef = StandardScaler()
     X_train_ef = scaler_ef.fit_transform(X_train_ef)
     X_test_ef = scaler_ef.transform(X_test_ef)
 
-    # ── Birleştir: Orijinal + STGP + EF ─────────────────────────
+    # ── Combine: Original + STGP + EF ──────────────────────────
     new_train = np.hstack((X_train, X_train_st, X_train_ef))
     new_test = np.hstack((X_test, X_test_st, X_test_ef))
     
@@ -243,14 +241,14 @@ def apply_stgp_ef(X_train, y_train, X_test):
 
 
 # ═══════════════════════════════════════════════════════════════════
-#  REGRESÖR DEĞERLENDİRMESİ
+#  REGRESSOR EVALUATION
 # ═══════════════════════════════════════════════════════════════════
 def evaluate_regressors(X_train, y_train, X_test, y_test):
-    """Tüm regresörleri eğitip Train ve Test için R², RMSE ve MAPE skorlarını döndürür."""
+    """Trains all regressors and returns R2, RMSE, MAPE scores for Train and Test sets."""
     regressors = get_regressors()
     results = {}
     
-    # Hata durumunda doldurulacak boş şablon
+    # Empty template for error cases
     nan_template = {
         'Train_R2': np.nan, 'Test_R2': np.nan,
         'Train_RMSE': np.nan, 'Test_RMSE': np.nan,
@@ -259,15 +257,15 @@ def evaluate_regressors(X_train, y_train, X_test, y_test):
 
     for name, model in regressors.items():
         try:
-            # Model eğitimindeki ve tahminindeki gizli printleri engelle
+            # Suppress hidden prints during training and prediction
             with open(os.devnull, 'w') as f, redirect_stdout(f):
                 model.fit(X_train, y_train)
                 
-                # Tahminler
+                # Predictions
                 y_train_pred = model.predict(X_train)
                 y_test_pred = model.predict(X_test)
             
-            # Metrik Hesaplamaları
+            # Metric calculations
             results[name] = {
                 'Train_R2': round(r2_score(y_train, y_train_pred), 6),
                 'Test_R2': round(r2_score(y_test, y_test_pred), 6),
@@ -277,60 +275,60 @@ def evaluate_regressors(X_train, y_train, X_test, y_test):
                 'Test_MAPE': round(mean_absolute_percentage_error(y_test, y_test_pred), 6)
             }
         except Exception as e:
-            # Sadece hataları yazdır, eğitim süreci sessiz kalsın
-            print(f"  Hata ({name}): {e}")
+            # Print only errors; keep training process silent
+            print(f"  Error ({name}): {e}")
             results[name] = nan_template.copy()
 
     return results
 
 
 # ═══════════════════════════════════════════════════════════════════
-#  SENARYO ANALİZİ — TEK HEDEF İÇİN
+#  SCENARIO ANALYSIS - SINGLE TARGET
 # ═══════════════════════════════════════════════════════════════════
 def run_all_scenarios(df, input_cols, target_col):
     """
-    Tek bir hedef değişken için 4 senaryoyu çalıştırır:
+    Runs 4 scenarios for a single target variable:
       1) Base
       2) SMOGN
       3) STGP-EF
       4) SMOGN + STGP-EF
     """
     print(f"\n{'='*60}")
-    print(f"  Hedef: {target_col}  |  Girdi: {input_cols}")
+    print(f"  Target: {target_col}  |  Input: {input_cols}")
     print(f"{'='*60}")
 
     X_train, X_test, y_train, y_test, _, _ = prepare_data(df, input_cols, target_col)
     all_results = {}
     X_smogn, y_smogn = None, None
 
-    # Hata şablonu (Train ve Test metrikleri için NaN)
+    # Error template (NaN for Train and Test metrics)
     empty_metrics = {k: np.nan for k in ['Train_R2', 'Test_R2', 'Train_RMSE', 'Test_RMSE', 'Train_MAPE', 'Test_MAPE']}
 
     # ── 1) Base ─────────────────────────────────────────────────
-    print("  [1/4] Base eğitim...")
+    print("  [1/4] Base training...")
     all_results['Base'] = evaluate_regressors(X_train, y_train, X_test, y_test)
     nan_results = {name: empty_metrics.copy() for name in all_results['Base']}
 
     # ── 2) SMOGN ────────────────────────────────────────────────
-    print("  [2/4] SMOGN eğitim...")
+    print("  [2/4] SMOGN training...")
     try:
         X_smogn, y_smogn = apply_smogn(X_train, y_train)
         all_results['SMOGN'] = evaluate_regressors(X_smogn, y_smogn, X_test, y_test)
     except Exception as e:
-        print(f"    SMOGN hatası: {e}")
+        print(f"    SMOGN error: {e}")
         all_results['SMOGN'] = nan_results
 
     # ── 3) STGP-EF ─────────────────────────────────────────────
-    print("  [3/4] STGP-EF eğitim...")
+    print("  [3/4] STGP-EF training...")
     try:
         X_tr_ef, X_te_ef = apply_stgp_ef(X_train, y_train, X_test)
         all_results['STGP-EF'] = evaluate_regressors(X_tr_ef, y_train, X_te_ef, y_test)
     except Exception as e:
-        print(f"    STGP-EF hatası: {e}")
+        print(f"    STGP-EF error: {e}")
         all_results['STGP-EF'] = nan_results
 
     # ── 4) SMOGN + STGP-EF ─────────────────────────────────────
-    print("  [4/4] SMOGN + STGP-EF eğitim...")
+    print("  [4/4] SMOGN + STGP-EF training...")
     try:
         if X_smogn is None:
             X_smogn, y_smogn = apply_smogn(X_train, y_train)
@@ -339,70 +337,70 @@ def run_all_scenarios(df, input_cols, target_col):
             X_smogn_ef, y_smogn, X_te_ef2, y_test
         )
     except Exception as e:
-        print(f"    SMOGN+STGP-EF hatası: {e}")
+        print(f"    SMOGN+STGP-EF error: {e}")
         all_results['SMOGN+STGP-EF'] = nan_results
 
-    print("  Tamamlandı.\n")
+    print("  Completed.\n")
     return all_results
 
 
 # ═══════════════════════════════════════════════════════════════════
-#  ANALİZ ÇALIŞTIRICILAR — DOYMUŞ VE KIZGIN BUHAR
+#  ANALYSIS RUNNERS - SATURATED AND SUPERHEATED STEAM
 # ═══════════════════════════════════════════════════════════════════
-def run_doymus_analysis(df):
-    """Doymuş buhar için tüm hedefler üzerinde analiz çalıştırır."""
+def run_saturated_analysis(df):
+    """Runs analysis for all target outputs in saturated steam."""
     print("\n" + "▓" * 60)
-    print("  DOYMUŞ BUHAR ANALİZİ")
+    print("  SATURATED STEAM ANALYSIS")
     print("▓" * 60)
     all_target_results = {}
-    for target in DOYMUS_OUTPUTS:
-        all_target_results[target] = run_all_scenarios(df, DOYMUS_INPUT, target)
+    for target in SATURATED_OUTPUTS:
+        all_target_results[target] = run_all_scenarios(df, SATURATED_INPUTS, target)
     return all_target_results
 
 
-def run_kizgin_analysis(df):
-    """Kızgın buhar için tüm hedefler üzerinde analiz çalıştırır."""
+def run_superheated_analysis(df):
+    """Runs analysis for all target outputs in superheated steam."""
     print("\n" + "▓" * 60)
-    print("  KIZGIN BUHAR ANALİZİ")
+    print("  SUPERHEATED STEAM ANALYSIS")
     print("▓" * 60)
     all_target_results = {}
-    for target in KIZGIN_OUTPUTS:
-        all_target_results[target] = run_all_scenarios(df, KIZGIN_INPUT, target)
+    for target in SUPERHEATED_OUTPUTS:
+        all_target_results[target] = run_all_scenarios(df, SUPERHEATED_INPUTS, target)
     return all_target_results
 
 
 # ═══════════════════════════════════════════════════════════════════
-#  SONUÇ İŞLEME VE PAYLAŞIMı
+#  RESULTS PROCESSING AND OUTPUT
 # ═══════════════════════════════════════════════════════════════════
 def build_results_table(target_results):
-    """Yeni çoklu metrik yapısını tabloya döker."""
+    """Converts multi-metric structure to table format."""
     rows = []
     for target, scenarios in target_results.items():
         for scenario, scores in scenarios.items():
             for algo, metrics in scores.items():
                 row = {
-                    'Hedef': target,
-                    'Senaryo': scenario,
-                    'Algoritma': algo
+                    'Target': target,
+                    'Scenario': scenario,
+                    'Algorithm': algo
                 }
-                row.update(metrics) # Metrik dictionary'sini satıra ekler
+                row.update(metrics)  # Add metrics dictionary to row
                 rows.append(row)
     return pd.DataFrame(rows)
 
 
 def show_best_results(results_df):
-    """Her hedef için Test_R2 bazında en iyi (Algoritma, Senaryo) kombinasyonunu döndürür."""
-    idx = results_df.groupby('Hedef')['Test_R2'].idxmax()
-    cols = ['Hedef', 'Senaryo', 'Algoritma', 'Test_R2', 'Train_R2', 'Test_RMSE', 'Test_MAPE']
+    """Returns best (Algorithm, Scenario) combination per target based on Test_R2."""
+    idx = results_df.groupby('Target')['Test_R2'].idxmax()
+    cols = ['Target', 'Scenario', 'Algorithm', 'Test_R2', 'Train_R2', 'Test_RMSE', 'Test_MAPE']
     best = results_df.loc[idx, [c for c in cols if c in results_df.columns]]
     return best.reset_index(drop=True)
 
 
 def compare_scenarios(results_df):
-    """Test_R2 değerlerini baz alarak hedef ve algoritmaya göre pivotlar."""
+    """Pivots Test_R2 values by target and algorithm."""
     pivot = results_df.pivot_table(
-        index=['Hedef', 'Algoritma'],
-        columns='Senaryo',
+        index=['Target', 'Algorithm'],
+        columns='Scenario',
         values='Test_R2'
     )
     pivot = pivot.reindex(columns=[s for s in SCENARIO_ORDER if s in pivot.columns])
@@ -410,11 +408,11 @@ def compare_scenarios(results_df):
 
 
 def target_summary(results_df, target_col):
-    """Test_R2 metriklerine göre tek hedefin özeti."""
-    sub = results_df[results_df['Hedef'] == target_col]
+    """Summary of single target based on Test_R2 metrics."""
+    sub = results_df[results_df['Target'] == target_col]
     pivot = sub.pivot_table(
-        index='Algoritma',
-        columns='Senaryo',
+        index='Algorithm',
+        columns='Scenario',
         values='Test_R2'
     )
     pivot = pivot.reindex(columns=[s for s in SCENARIO_ORDER if s in pivot.columns])
@@ -422,16 +420,16 @@ def target_summary(results_df, target_col):
 
 
 # ═══════════════════════════════════════════════════════════════════
-#  SONUÇ KAYDETME — GENİŞ FORMATA ÇEVİRME
+#  RESULTS SAVING - WIDE FORMAT CONVERSION
 # ═══════════════════════════════════════════════════════════════════
 
 def save_wide_results(df_long, path):
     """
-    Tüm metrikleri senaryolara göre geniş formata çevirip kaydeder.
-    Karşılaştırma özetini Test_R2 üzerinden yapar.
+    Converts all metrics to wide format by scenario and saves.
+    Creates comparison summary based on Test_R2.
     """
     metrics = ['Train_R2', 'Test_R2', 'Train_RMSE', 'Test_RMSE', 'Train_MAPE', 'Test_MAPE']
-    index_cols = [c for c in ['Veri Seti', 'Hedef', 'Algoritma'] if c in df_long.columns]
+    index_cols = [c for c in ['Dataset', 'Target', 'Algorithm'] if c in df_long.columns]
     
     pivot = df_long.pivot_table(
         index=index_cols,
@@ -439,10 +437,10 @@ def save_wide_results(df_long, path):
         values=metrics
     )
     
-    # Çoklu indeksi düzleştirme (Örn: Base_Test_R2)
+    # Flatten multi-index (e.g., Base_Test_R2)
     pivot.columns = [f"{col[1]}_{col[0]}" for col in pivot.columns]
     
-    # Sütunları Senaryo > Metrik sırasına göre yeniden diz
+    # Reorder columns by Scenario > Metric
     ordered_cols = []
     for s in SCENARIO_ORDER:
         for m in metrics:
@@ -452,11 +450,11 @@ def save_wide_results(df_long, path):
                 
     pivot = pivot.reindex(columns=ordered_cols)
 
-    # Kazananı (Max) Test_R2'ye göre belirle
+    # Determine winner (Max) based on Test_R2
     test_r2_cols = [f"{s}_Test_R2" for s in SCENARIO_ORDER if f"{s}_Test_R2" in pivot.columns]
     pivot['Max_Test_R2'] = pivot[test_r2_cols].max(axis=1)
-    # _Test_R2 takısını atıp sadece senaryo adını tut
-    pivot['Max_Senaryo'] = pivot[test_r2_cols].idxmax(axis=1).str.replace('_Test_R2', '')
+    # Remove _Test_R2 suffix and keep only scenario name
+    pivot['Max_Scenario'] = pivot[test_r2_cols].idxmax(axis=1).str.replace('_Test_R2', '')
 
     wide = pivot.reset_index()
     wide = wide.sort_values(index_cols).reset_index(drop=True)
@@ -467,147 +465,142 @@ def save_wide_results(df_long, path):
 
 
 # ═══════════════════════════════════════════════════════════════════
-#  Karşılaştırma Özeti — CSV'ye Ekle
+#  COMPARISON SUMMARY - APPEND TO CSV
 # ═══════════════════════════════════════════════════════════════════
 def save_comparison_summary(wide_df, path):
     """
-    Kayıt edilen CSV'nin altına Test_R2 metriklerine dayalı
-    karşılaştırma raporlarını ekler.
+    Appends comparison reports based on Test_R2 metrics
+    to the saved CSV file.
     """
     scenarios = ['Base', 'SMOGN', 'STGP-EF', 'SMOGN+STGP-EF']
     cols = [s for s in scenarios if f"{s}_Test_R2" in wide_df.columns]
 
     with open(path, 'a', encoding='utf-8-sig', newline='') as f:
 
-        # ── 1. Senaryoya Göre Karşılaştırma ─────────────────────
+        # ── 1. Scenario-Based Comparison ───────────────────────
         f.write('\n')
-        f.write('SENARYO BAZLI KARSILASTIRMA (Test_R2 Baz Alinmistir)\n')
-        f.write('Senaryo,Kazanma_Sayisi,Kazanma_Orani_%,Senaryo_Ort_Test_R2,Kazananlar_Ort_Maks_Test_R2\n')
+        f.write('SCENARIO BASED COMPARISON (Based on Test_R2)\n')
+        f.write('Scenario,Win_Count,Win_Rate_%,Scenario_Mean_Test_R2,Winner_Mean_Max_Test_R2\n')
         for s in cols:
             col_name = f"{s}_Test_R2"
-            kazanma = int((wide_df['Max_Senaryo'] == s).sum())
-            oran    = round(kazanma / len(wide_df) * 100, 2)
-            ort_s   = round(wide_df[col_name].mean(), 6)
-            mask    = wide_df['Max_Senaryo'] == s
-            ort_m   = round(wide_df.loc[mask, 'Max_Test_R2'].mean(), 6) if kazanma > 0 else ''
-            f.write(f'{s},{kazanma},{oran},{ort_s},{ort_m}\n')
+            win_count = int((wide_df['Max_Scenario'] == s).sum())
+            win_rate  = round(win_count / len(wide_df) * 100, 2)
+            mean_s    = round(wide_df[col_name].mean(), 6)
+            mask      = wide_df['Max_Scenario'] == s
+            mean_max  = round(wide_df.loc[mask, 'Max_Test_R2'].mean(), 6) if win_count > 0 else ''
+            f.write(f'{s},{win_count},{win_rate},{mean_s},{mean_max}\n')
 
-        # ── 2. Algoritmaya Göre Karşılaştırma ───────────────────
+        # ── 2. Algorithm-Based Comparison ──────────────────────
         f.write('\n')
-        f.write('ALGORITMA BAZLI KARSILASTIRMA (Test_R2 Baz Alinmistir)\n')
-        header = ('Algoritma,' + ','.join([f"Ort_{s}_Test_R2" for s in cols]) +
-                  ',Ort_Max_Test_R2,En_Iyi_Senaryo,' +
-                  ','.join([f"Kazanma_{s}" for s in cols]) + '\n')
+        f.write('ALGORITHM BASED COMPARISON (Based on Test_R2)\n')
+        header = ('Algorithm,' + ','.join([f"Mean_{s}_Test_R2" for s in cols]) +
+                  ',Mean_Max_Test_R2,Best_Scenario,' +
+                  ','.join([f"Win_Count_{s}" for s in cols]) + '\n')
         f.write(header)
         
-        for alg in sorted(wide_df['Algoritma'].unique()):
-            grp  = wide_df[wide_df['Algoritma'] == alg]
-            ortalamalar = [round(grp[f"{s}_Test_R2"].mean(), 6) for s in cols]
-            ort_maks    = round(grp['Max_Test_R2'].mean(), 6)
+        for alg in sorted(wide_df['Algorithm'].unique()):
+            grp  = wide_df[wide_df['Algorithm'] == alg]
+            means = [round(grp[f"{s}_Test_R2"].mean(), 6) for s in cols]
+            mean_max = round(grp['Max_Test_R2'].mean(), 6)
             
-            # En iyi senaryoyu güvenli hesaplama (Eşitlik durumunda veya boşken hata vermemesi için)
-            modes = grp['Max_Senaryo'].mode()
-            en_iyi = modes[0] if not modes.empty else "Bilinmiyor"
+            # Calculate best scenario safely (handle ties and empty cases)
+            modes = grp['Max_Scenario'].mode()
+            best = modes[0] if not modes.empty else "Unknown"
             
-            wins        = grp['Max_Senaryo'].value_counts().to_dict()
-            w_vals      = [wins.get(s, 0) for s in cols]
+            wins   = grp['Max_Scenario'].value_counts().to_dict()
+            wins_vals = [wins.get(s, 0) for s in cols]
             
-            row = [alg] + ortalamalar + [ort_maks, en_iyi] + w_vals
+            row = [alg] + means + [mean_max, best] + wins_vals
             f.write(','.join(str(x) for x in row) + '\n')
 
 
 # ═══════════════════════════════════════════════════════════════════
-#  SHAP AÇIKLANABILIRLK ANALİZİ
+#  SHAP EXPLAINABILITY ANALYSIS
 # ═══════════════════════════════════════════════════════════════════
 
 def calculate_shap_values(model, X_data):
     """
-    Eğitilmiş bir ağaç tabanlı model (Random Forest, Extra Trees, Evolutionary Forest vb.) 
-    için SHAP değerlerini hesaplar.
+    Calculates SHAP values for a trained tree-based model 
+    (Random Forest, Extra Trees, Evolutionary Forest, etc.).
     
-    Parametreler:
-    model: Eğitilmiş makine öğrenmesi modeli (scikit-learn uyumlu).
-    X_data (pd.DataFrame): SHAP değerlerinin hesaplanacağı veri seti (genellikle X_test).
+    Parameters:
+    model: Trained machine learning model (scikit-learn compatible).
+    X_data (pd.DataFrame): Dataset for which SHAP values will be calculated (typically X_test).
     
-    Dönüş:
-    explainer: SHAP explainer nesnesi.
-    shap_values: Hesaplanmış SHAP değerleri.
+    Returns:
+    explainer: SHAP explainer object.
+    shap_values: Calculated SHAP values.
     """
-    # Ağaç modelleri için TreeExplainer kullanımı
+    # Use TreeExplainer for tree-based models
     explainer = shap.TreeExplainer(model)
     shap_values = explainer.shap_values(X_data)
     
     return explainer, shap_values
 
 
-# ── Küresel Özellik Önemi ─────────────────────────────────────────
-def plot_global_feature_importance(shap_values, X_data, save_path=None):
-    
-    return explainer, shap_values
-
-
+# ── Global Feature Importance ─────────────────────────────────────
 def plot_global_feature_importance(shap_values, X_data, save_path=None):
     """
-    Modelin küresel (global) özellik önemini bar grafiği olarak çizer.
-    Hangi STGP-EF özelliklerinin veya fiziksel parametrelerin en baskın olduğunu gösterir.
+    Plots global feature importance as a bar chart.
+    Shows which STGP-EF features or physical parameters are most dominant.
     
-    Parametreler:
-    shap_values: calculate_shap_values metodundan dönen SHAP değerleri.
-    X_data (pd.DataFrame): Özellik isimlerini almak için kullanılan veri seti.
-    save_path (str, opsiyonel): Grafiğin kaydedileceği dosya yolu.
+    Parameters:
+    shap_values: SHAP values returned from calculate_shap_values method.
+    X_data (pd.DataFrame): Dataset used to obtain feature names.
+    save_path (str, optional): File path where the plot will be saved.
     """
     plt.figure(figsize=(10, 6))
     shap.summary_plot(shap_values, X_data, plot_type="bar", show=False)
-    plt.title("Küresel Özellik Önemi (Global Feature Importance)", fontsize=14)
+    plt.title("Global Feature Importance", fontsize=14)
     plt.tight_layout()
     
     if save_path:
         os.makedirs(os.path.dirname(save_path), exist_ok=True)
         plt.savefig(save_path, dpi=300, bbox_inches='tight')
-        print(f"Grafik kaydedildi: {save_path}")
+        print(f"Plot saved: {save_path}")
         
     plt.show()
 
 
-# ── SHAP Özet Grafiği (Arı Kovanı) ──────────────────────────────
+# ── SHAP Summary Plot (Bee Swarm) ──────────────────────────────────
 def plot_global_summary(shap_values, X_data, save_path=None):
     """
-    Değişkenlerin yüksek/düşük değerlerinin hedef değişkeni (entalpi, özgül hacim vb.) 
-    nasıl etkilediğini gösteren yoğunluk (arı kovanı) grafiğini çizer.
+    Plots density (bee swarm) plot showing how high/low values of variables
+    affect the target variable (enthalpy, specific volume, etc.).
     """
     plt.figure(figsize=(10, 6))
     shap.summary_plot(shap_values, X_data, show=False)
-    plt.title("SHAP Özet Grafiği (SHAP Summary Plot)", fontsize=14)
+    plt.title("SHAP Summary Plot", fontsize=14)
     plt.tight_layout()
     
     if save_path:
         os.makedirs(os.path.dirname(save_path), exist_ok=True)
         plt.savefig(save_path, dpi=300, bbox_inches='tight')
-        print(f"Grafik kaydedildi: {save_path}")
+        print(f"Plot saved: {save_path}")
         
     plt.show()
 
 
-# ── Yerel Açıklanabilirlik (Waterfall) ───────────────────────────
+# ── Local Interpretability (Waterfall) ─────────────────────────────
 def plot_local_waterfall(explainer, shap_values, X_data, instance_index=0, save_path=None):
     """
-    Spesifik bir veri noktasındaki (satır) yerel (local) tahminin nasıl oluştuğunu açıklar.
+    Explains how a prediction is formed for a specific data point (row).
     
-    Parametreler:
-    explainer: SHAP explainer nesnesi.
-    shap_values: İlgili modele ait SHAP değerleri matrisi.
-    X_data (pd.DataFrame): Analiz edilen veri seti.
-    instance_index (int): İncelenecek spesifik verinin satır indeksi.
+    Parameters:
+    explainer: SHAP explainer object.
+    shap_values: SHAP values matrix for the corresponding model.
+    X_data (pd.DataFrame): Dataset being analyzed.
+    instance_index (int): Row index of the specific data point to examine.
     """
-    # Waterfall plot için Explanation nesnesi oluşturulması (SHAP 0.40+ versiyonları için)
-    # Eğer shap_values doğrudan Explanation nesnesiyse şekillendirmeye gerek kalmayabilir.
+    # Create Explanation object for waterfall plot (SHAP 0.40+ versions)
+    # If shap_values is already an Explanation object, no reshaping needed.
     
     plt.figure(figsize=(10, 6))
     
     if isinstance(shap_values, shap.Explanation):
         shap.plots.waterfall(shap_values[instance_index], show=False)
     else:
-        # Eski versiyon uyumluluğu veya ham numpy array dönüşü için
+        # For backward compatibility or raw numpy array conversion
         expected_value = explainer.expected_value
         if isinstance(expected_value, np.ndarray):
             expected_value = expected_value[0]
@@ -619,28 +612,28 @@ def plot_local_waterfall(explainer, shap_values, X_data, instance_index=0, save_
             show=False
         )
         
-    plt.title(f"Yerel Açıklanabilirlik - İndeks: {instance_index}", fontsize=14)
+    plt.title(f"Local Interpretability - Index: {instance_index}", fontsize=14)
     plt.tight_layout()
     
     if save_path:
         os.makedirs(os.path.dirname(save_path), exist_ok=True)
         plt.savefig(save_path, dpi=300, bbox_inches='tight')
-        print(f"Grafik kaydedildi: {save_path}")
+        print(f"Plot saved: {save_path}")
         
     plt.show()
 
 
-# ── Termodinamik Bağımlılık Analizi ──────────────────────────────
+# ── Thermodynamic Dependence Analysis ──────────────────────────────
 def plot_thermodynamic_dependence(shap_values, X_data, feature_name, interaction_feature="auto", save_path=None):
     """
-    Fiziksel termodinamik kuralların model tarafından öğrenilip öğrenilmediğini 
-    kanıtlamak için SHAP Bağımlılık (Dependence) grafiğini çizer.
+    Plots SHAP Dependence plot to verify if thermodynamic rules 
+    are learned by the model.
     
-    Parametreler:
-    shap_values: SHAP değerleri.
-    X_data (pd.DataFrame): Analiz edilen veri seti.
-    feature_name (str): X ekseninde incelenecek bağımsız değişken (Örn: 'Basınç (P, kPa)').
-    interaction_feature (str): Renk skalası olarak eklenecek değişken (Varsayılan: 'auto').
+    Parameters:
+    shap_values: SHAP values.
+    X_data (pd.DataFrame): Dataset being analyzed.
+    feature_name (str): Independent variable to examine on X-axis (e.g., 'Pressure (P, kPa)').
+    interaction_feature (str): Variable to be added as color scale (Default: 'auto').
     """
     plt.figure(figsize=(8, 6))
     shap.dependence_plot(
@@ -650,12 +643,12 @@ def plot_thermodynamic_dependence(shap_values, X_data, feature_name, interaction
         interaction_index=interaction_feature,
         show=False
     )
-    plt.title(f"Termodinamik Bağımlılık Analizi: {feature_name}", fontsize=14)
+    plt.title(f"Thermodynamic Dependence Analysis: {feature_name}", fontsize=14)
     plt.tight_layout()
     
     if save_path:
         os.makedirs(os.path.dirname(save_path), exist_ok=True)
         plt.savefig(save_path, dpi=300, bbox_inches='tight')
-        print(f"Grafik kaydedildi: {save_path}")
+        print(f"Plot saved: {save_path}")
         
     plt.show()

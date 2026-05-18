@@ -5,6 +5,13 @@ import warnings
 import os
 import numpy as np
 import pandas as pd
+import logging
+import re
+import gc # RAM yönetimi için eklendi
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
 import shap
 import matplotlib.pyplot as plt
 from contextlib import redirect_stdout
@@ -16,11 +23,11 @@ from sklearn.ensemble import (
 )
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import (
-    r2_score, mean_absolute_error, mean_squared_error, 
+    r2_score, mean_squared_error, 
     mean_absolute_percentage_error
 )
 from sklearn.preprocessing import StandardScaler
-from sklearn.neighbors import KNeighborsRegressor
+from sklearn.neighbors import KNeighborsRegressor, NearestNeighbors
 
 # ML Kütüphaneleri
 import xgboost as xgb
@@ -28,7 +35,8 @@ import lightgbm as lgb
 from catboost import CatBoostRegressor
 from gplearn.genetic import SymbolicTransformer, SymbolicRegressor
 from evolutionary_forest.forest import EvolutionaryForestRegressor
-import smogn
+
+warnings.filterwarnings('ignore')
 
 # ═══════════════════════════════════════════════════════════════════
 #  COMPATIBILITY PATCHES
@@ -74,7 +82,6 @@ _ef_mod.consistency_check = lambda learner: None
 # ═══════════════════════════════════════════════════════════════════
 #  CONFIGURATION SETTINGS
 # ═══════════════════════════════════════════════════════════════════
-warnings.filterwarnings('ignore')
 np.seterr(divide='ignore', invalid='ignore')
 pd.set_option('display.max_columns', None)
 pd.set_option('display.width', 1000)
@@ -86,15 +93,15 @@ pd.set_option('display.float_format', '{:.4f}'.format)
 # ═══════════════════════════════════════════════════════════════════
 SCENARIO_ORDER = ['Base', 'SMOGN', 'STGP-EF', 'SMOGN+STGP-EF']
 
-SATURATED_INPUTS = ['T_input']
+SATURATED_INPUTS = ['T(girdi)']
 SATURATED_OUTPUTS = [
-    'P_output', 'v_liquid_output', 'v_vapor_output',
-    'h_liquid_output', 'h_vapor_output',
-    's_liquid_output', 's_vapor_output'
+    'P(çıktı)', 'v sıvı (çıktı)', 'v buhar (çıktı)',
+    'h sıvı (çıktı)', 'h buhar (çıktı)',
+    's sıvı (çıktı)', 's buhar (çıktı)'
 ]
 
-SUPERHEATED_INPUTS = ['T_input', 'P_input']
-SUPERHEATED_OUTPUTS = ['v_output', 'h_output', 's_output']
+SUPERHEATED_INPUTS = ['T (girdi)', 'P (girdi)']
+SUPERHEATED_OUTPUTS = ['v (çıktı)', 'h (çıktı)', 's (çıktı)']
 
 # ═══════════════════════════════════════════════════════════════════
 #  REGRESSOR DICTIONARY
@@ -149,123 +156,213 @@ def prepare_data(df, input_cols, target_col, test_size=0.3, random_state=42):
 # ═══════════════════════════════════════════════════════════════════
 #  FEATURE ENGINEERING - SMOGN (Data Augmentation)
 # ═══════════════════════════════════════════════════════════════════
-def apply_smogn(X_train, y_train):
+def apply_smogn(X_train, y_train, k=5, rare_threshold_low=15, rare_threshold_high=85, noise_level=0.01):
     """
-    Applies data augmentation to training data using SMOGN.
-    Uses hybrid approach with 'balance' sampling method as specified in paper.
+    Termodinamik veriler (özellikle düşük varyanslı doymuş fazlar) için 
+    Çeşmeli (2025) teorisine dayanılarak sıfırdan yazılmış SMOGN algoritması.
+    Kütüphane kaynaklı 'relevance function' (all points are 1) çökmelerini engeller.
     """
-    col_names = [f"x{i}" for i in range(X_train.shape[1])]
-    df_temp = pd.DataFrame(X_train, columns=col_names)
-    df_temp['target'] = y_train
+    print("Özel SMOGN Algoritması başlatılıyor (Custom Build)...")
+    
+    X = np.array(X_train)
+    y = np.array(y_train)
+    
+    lower_bound = np.percentile(y, rare_threshold_low)
+    upper_bound = np.percentile(y, rare_threshold_high)
+    
+    minority_idx = np.where((y <= lower_bound) | (y >= upper_bound))[0]
+    majority_idx = np.where((y > lower_bound) & (y < upper_bound))[0]
+    
+    if len(minority_idx) < k or len(majority_idx) == 0:
+        print("Uyarı: Veri varyansı sentetik üretime uygun değil, orijinal veriye dönülüyor.")
+        return X_train, y_train
 
-    try:
-        # Paper-specified configuration: samp_method='balance'
-        # This combines over-sampling and under-sampling for hybrid balancing.
-        df_augmented = smogn.smoter(
-            data=df_temp, 
-            y='target', 
-            samp_method='balance'
-        )
+    X_min, y_min = X[minority_idx], y[minority_idx]
+    X_maj, y_maj = X[majority_idx], y[majority_idx]
+    
+    synthetic_X = []
+    synthetic_y = []
+    
+    nn = NearestNeighbors(n_neighbors=k+1)
+    nn.fit(X_min)
+    distances, indices = nn.kneighbors(X_min)
+    
+    for i in range(len(X_min)):
+        nn_idx = indices[i, np.random.randint(1, k+1)]
+        step = np.random.rand()
         
-        X_aug = df_augmented[col_names].values.astype(np.float64)
-        y_aug = df_augmented['target'].values.astype(np.float64)
+        new_X = X_min[i] + step * (X_min[nn_idx] - X_min[i])
+        new_y = y_min[i] + step * (y_min[nn_idx] - y_min[i])
         
-        return X_aug, y_aug
+        new_y += np.random.normal(0, noise_level * np.std(y))
         
-    except Exception as e:
-        raise ValueError(f"SMOGN operation failed with 'balance' parameter: {e}")
-
+        synthetic_X.append(new_X)
+        synthetic_y.append(new_y)
+        
+    synthetic_X = np.array(synthetic_X)
+    synthetic_y = np.array(synthetic_y)
+    
+    drop_count = int(len(majority_idx) * 0.20)
+    keep_indices = np.random.choice(len(X_maj), len(X_maj) - drop_count, replace=False)
+    
+    X_maj_balanced = X_maj[keep_indices]
+    y_maj_balanced = y_maj[keep_indices]
+    
+    X_final = np.vstack((X_min, synthetic_X, X_maj_balanced))
+    y_final = np.concatenate((y_min, synthetic_y, y_maj_balanced))
+    
+    print(f"Özel SMOGN Başarılı! Orijinal: {len(X)} -> Artırılmış/Dengelenmiş: {len(X_final)}")
+    
+    return X_final, y_final
 
 # ═══════════════════════════════════════════════════════════════════
 #  FEATURE ENGINEERING - STGP-EF (Feature Engineering)
 # ═══════════════════════════════════════════════════════════════════
-def apply_stgp_ef(X_train, y_train, X_test):
-    """
-    Generates new features using SymbolicTransformer (STGP) and 
-    Evolutionary Forest (EF), then combines with original features.
-    """
-    # ── STGP - Symbolic Transformer Feature Extraction ──────────
-    stgp = SymbolicTransformer(
-        generations=20,
-        population_size=1000,
-        hall_of_fame=100,
-        n_components=10,
-        function_set=['add', 'sub', 'mul', 'div', 'sqrt', 'log', 'abs', 'neg'],
-        parsimony_coefficient=0.005,
-        max_samples=0.9,
-        verbose=0,
-        random_state=42,
-        n_jobs=-1
-    )
-
-    with np.errstate(divide='ignore', invalid='ignore'):
-        stgp.fit(X_train, y_train)
-        X_train_st = np.nan_to_num(stgp.transform(X_train))
-        X_test_st = np.nan_to_num(stgp.transform(X_test))
-
-    # Scale STGP features
-    scaler_st = StandardScaler()
-    X_train_st = scaler_st.fit_transform(X_train_st)
-    X_test_st = scaler_st.transform(X_test_st)
-
-    # ── EF - Evolutionary Forest Feature Extraction ─────────────
-    ef = EvolutionaryForestRegressor(
-        n_gen=20,
-        n_pop=200,
-        basic_primitives='optimal',
-        verbose=False,
-        random_state=42,
-        n_process=1
-    )
-
-    with open(os.devnull, 'w') as f, redirect_stdout(f):
-        ef.fit(X_train, y_train)
-        X_train_ef = np.nan_to_num(ef.transform(X_train))
-        X_test_ef = np.nan_to_num(ef.transform(X_test))
-
-    # Paper missing step: Reduce EF features to Top 10 based on Feature Importance
-    if X_train_ef.shape[1] > 10:
-        X_train_ef = X_train_ef[:, :10]
-        X_test_ef = X_test_ef[:, :10]
-
-    # Scale EF features
-    scaler_ef = StandardScaler()
-    X_train_ef = scaler_ef.fit_transform(X_train_ef)
-    X_test_ef = scaler_ef.transform(X_test_ef)
-
-    # ── Combine: Original + STGP + EF ──────────────────────────
-    new_train = np.hstack((X_train, X_train_st, X_train_ef))
-    new_test = np.hstack((X_test, X_test_st, X_test_ef))
+def format_math_expr(expr: str) -> str:
+    expr = str(expr).strip()
+    expr = re.sub(r'(?i)ARG(\d+)', r'x\1', expr)
+    expr = re.sub(r'\bX(\d+)\b', r'x\1', expr)
+    expr = expr.replace('"', '').replace("'", "")
+    expr = re.sub(r'\b(x\d+)\b', r'"\1"', expr)
     
-    return new_train, new_test
+    safe_dict = {
+        'Add': lambda a, b: f"({a} + {b})", 'add': lambda a, b: f"({a} + {b})",
+        'Sub': lambda a, b: f"({a} - {b})", 'sub': lambda a, b: f"({a} - {b})",
+        'Mul': lambda a, b: f"({a} * {b})", 'mul': lambda a, b: f"({a} * {b})",
+        'Div': lambda a, b: f"({a} / {b})", 'div': lambda a, b: f"({a} / {b})",
+        'AQ':  lambda a, b: f"({a} / {b})",
+        'Sin': lambda a: f"sin({a})", 'sin': lambda a: f"sin({a})",
+        'Cos': lambda a: f"cos({a})", 'cos': lambda a: f"cos({a})",
+        'Exp': lambda a: f"exp({a})", 'exp': lambda a: f"exp({a})",
+        'Log': lambda a: f"log({a})", 'log': lambda a: f"log({a})",
+        'Abs': lambda a: f"abs({a})", 'abs': lambda a: f"abs({a})",
+        'Neg': lambda a: f"(-{a})", 'neg': lambda a: f"(-{a})",
+        'Inv': lambda a: f"(1 / {a})", 'inv': lambda a: f"(1 / {a})",
+        'Max': lambda a, b: f"max({a}, {b})", 'max': lambda a, b: f"max({a}, {b})",
+        'Min': lambda a, b: f"min({a}, {b})", 'min': lambda a, b: f"min({a}, {b})"
+    }
+    
+    try:
+        formatted_expr = eval(expr, {"__builtins__": {}}, safe_dict)
+        if isinstance(formatted_expr, (list, tuple)):
+            return " | ".join(str(x) for x in formatted_expr)
+        return str(formatted_expr)
+    except Exception:
+        return expr.replace('"', '')
+
+def extract_symbolic_transformer_formulas(stgp_model, n_features: int = 10) -> dict:
+    formulas = {}
+    try:
+        if hasattr(stgp_model, '_best_programs'):
+            programs = stgp_model._best_programs
+            n_to_show = min(n_features, len(programs))
+            logger.info(f"\n{'─' * 78}")
+            logger.info(f"SYMBOLIC REGRESSION (STGP) - Generated Features ({n_to_show} of {len(programs)})")
+            logger.info(f"{'─' * 78}")
+            for idx in range(n_to_show):
+                formula = format_math_expr(str(programs[idx]))
+                formulas[f'STGP_{idx}'] = formula
+                logger.info(f"  STGP_{idx:02d}: {formula}")
+    except Exception as e:
+        logger.warning(f"Error extracting STGP formulas: {e}")
+    return formulas
+
+def extract_ef_formulas(ef_model, n_features: int = 10) -> dict:
+    formulas = {}
+    try:
+        if hasattr(ef_model, '_best_hof') or hasattr(ef_model, 'hof'):
+            hof = getattr(ef_model, '_best_hof', getattr(ef_model, 'hof', None))
+            if hof is not None:
+                n_to_show = min(n_features, len(hof))
+                logger.info(f"\n{'─' * 78}")
+                logger.info(f"EVOLUTIONARY FOREST (EF) - Generated Features ({n_to_show} of {len(hof)})")
+                logger.info(f"{'─' * 78}")
+                for idx in range(n_to_show):
+                    formula = format_math_expr(str(hof[idx]))
+                    formulas[f'EF_{idx}'] = formula
+                    logger.info(f"  EF_{idx:02d}: {formula}")
+    except Exception as e:
+        logger.warning(f"Error extracting EF formulas: {e}")
+    return formulas
+
+def apply_stgp_ef(X_train, y_train, X_test, n_best_features=10):
+    """
+    STGP ve EF algoritmalarını kullanarak hibrit özellik inşası yapar.
+    Terminali kirleten kütüphane çıktıları (population_evaluation vb.) susturulmuştur.
+    """
+    logger.info("Hibrit Özellik İnşası (STGP-EF) Başlatılıyor...")
+
+    # Stage 1: STGP (Sembolik Transformer)
+    X_train_stgp = np.empty((X_train.shape[0], 0))
+    X_test_stgp  = np.empty((X_test.shape[0], 0))
+    try:
+        stgp_model = SymbolicTransformer(n_jobs=1, random_state=42)
+        # İstenmeyen kütüphane çıktılarını susturmak için stdout yönlendirmesi
+        with open(os.devnull, 'w') as f, redirect_stdout(f):
+            stgp_model.fit(X_train, y_train)
+            X_train_stgp = np.nan_to_num(stgp_model.transform(X_train))
+            X_test_stgp  = np.nan_to_num(stgp_model.transform(X_test))
+        extract_symbolic_transformer_formulas(stgp_model, n_features=n_best_features)
+    except Exception as e:
+        logger.error(f"STGP başarısız oldu: {e}")
+    finally:
+        try: del stgp_model
+        except: pass
+        gc.collect()
+
+    n_stgp_selected = min(n_best_features, X_train_stgp.shape[1])
+    if n_stgp_selected > 0:
+        X_train_stgp = X_train_stgp[:, :n_stgp_selected]
+        X_test_stgp  = X_test_stgp[:, :n_stgp_selected]
+
+    # Stage 2: EF (Evrimsel Orman)
+    X_train_ef = np.empty((X_train.shape[0], 0))
+    X_test_ef  = np.empty((X_test.shape[0], 0))
+    try:
+        ef_model = EvolutionaryForestRegressor(random_state=42, basic_primitives="default", verbose=False)
+        # population_evaluation printlerini susturmak için stdout yönlendirmesi
+        with open(os.devnull, 'w') as f, redirect_stdout(f):
+            ef_model.fit(X_train, y_train)
+            X_train_ef = ef_model.transform(X_train)
+            X_test_ef  = ef_model.transform(X_test)
+        extract_ef_formulas(ef_model, n_features=n_best_features)
+    except Exception as e:
+        logger.error(f"EF başarısız oldu: {e}")
+    finally:
+        try: del ef_model
+        except: pass
+        gc.collect()
+
+    n_ef_selected = min(n_best_features, X_train_ef.shape[1])
+    if n_ef_selected > 0:
+        X_train_ef = X_train_ef[:, :n_ef_selected]
+        X_test_ef  = X_test_ef[:, :n_ef_selected]
+
+    # Stage 3: Verilerin Birleştirilmesi
+    X_train_constructed = np.hstack((X_train_stgp, X_train_ef)) if X_train_stgp.size and X_train_ef.size else np.empty((X_train.shape[0], 0))
+    X_test_constructed  = np.hstack((X_test_stgp, X_test_ef)) if X_test_stgp.size and X_test_ef.size else np.empty((X_test.shape[0], 0))
+
+    X_train_hybrid = np.hstack((X_train, X_train_constructed)) if X_train_constructed.size else X_train
+    X_test_hybrid  = np.hstack((X_test, X_test_constructed)) if X_test_constructed.size else X_test
+
+    return X_train_hybrid, X_test_hybrid
 
 
 # ═══════════════════════════════════════════════════════════════════
 #  REGRESSOR EVALUATION
 # ═══════════════════════════════════════════════════════════════════
 def evaluate_regressors(X_train, y_train, X_test, y_test):
-    """Trains all regressors and returns R2, RMSE, MAPE scores for Train and Test sets."""
     regressors = get_regressors()
     results = {}
-    
-    # Empty template for error cases
-    nan_template = {
-        'Train_R2': np.nan, 'Test_R2': np.nan,
-        'Train_RMSE': np.nan, 'Test_RMSE': np.nan,
-        'Train_MAPE': np.nan, 'Test_MAPE': np.nan
-    }
+    nan_template = {'Train_R2': np.nan, 'Test_R2': np.nan, 'Train_RMSE': np.nan, 'Test_RMSE': np.nan, 'Train_MAPE': np.nan, 'Test_MAPE': np.nan}
 
     for name, model in regressors.items():
         try:
-            # Suppress hidden prints during training and prediction
             with open(os.devnull, 'w') as f, redirect_stdout(f):
                 model.fit(X_train, y_train)
-                
-                # Predictions
                 y_train_pred = model.predict(X_train)
                 y_test_pred = model.predict(X_test)
             
-            # Metric calculations
             results[name] = {
                 'Train_R2': round(r2_score(y_train, y_train_pred), 6),
                 'Test_R2': round(r2_score(y_test, y_test_pred), 6),
@@ -275,41 +372,29 @@ def evaluate_regressors(X_train, y_train, X_test, y_test):
                 'Test_MAPE': round(mean_absolute_percentage_error(y_test, y_test_pred), 6)
             }
         except Exception as e:
-            # Print only errors; keep training process silent
             print(f"  Error ({name}): {e}")
             results[name] = nan_template.copy()
 
     return results
 
-
 # ═══════════════════════════════════════════════════════════════════
-#  SCENARIO ANALYSIS - SINGLE TARGET
+#  SCENARIO ANALYSIS 
 # ═══════════════════════════════════════════════════════════════════
 def run_all_scenarios(df, input_cols, target_col):
-    """
-    Runs 4 scenarios for a single target variable:
-      1) Base
-      2) SMOGN
-      3) STGP-EF
-      4) SMOGN + STGP-EF
-    """
     print(f"\n{'='*60}")
     print(f"  Target: {target_col}  |  Input: {input_cols}")
     print(f"{'='*60}")
 
     X_train, X_test, y_train, y_test, _, _ = prepare_data(df, input_cols, target_col)
     all_results = {}
-    X_smogn, y_smogn = None, None
-
-    # Error template (NaN for Train and Test metrics)
     empty_metrics = {k: np.nan for k in ['Train_R2', 'Test_R2', 'Train_RMSE', 'Test_RMSE', 'Train_MAPE', 'Test_MAPE']}
 
-    # ── 1) Base ─────────────────────────────────────────────────
+    # 1) Base
     print("  [1/4] Base training...")
     all_results['Base'] = evaluate_regressors(X_train, y_train, X_test, y_test)
     nan_results = {name: empty_metrics.copy() for name in all_results['Base']}
 
-    # ── 2) SMOGN ────────────────────────────────────────────────
+    # 2) SMOGN
     print("  [2/4] SMOGN training...")
     try:
         X_smogn, y_smogn = apply_smogn(X_train, y_train)
@@ -318,7 +403,7 @@ def run_all_scenarios(df, input_cols, target_col):
         print(f"    SMOGN error: {e}")
         all_results['SMOGN'] = nan_results
 
-    # ── 3) STGP-EF ─────────────────────────────────────────────
+    # 3) STGP-EF
     print("  [3/4] STGP-EF training...")
     try:
         X_tr_ef, X_te_ef = apply_stgp_ef(X_train, y_train, X_test)
@@ -327,15 +412,13 @@ def run_all_scenarios(df, input_cols, target_col):
         print(f"    STGP-EF error: {e}")
         all_results['STGP-EF'] = nan_results
 
-    # ── 4) SMOGN + STGP-EF ─────────────────────────────────────
+    # 4) SMOGN + STGP-EF
     print("  [4/4] SMOGN + STGP-EF training...")
     try:
-        if X_smogn is None:
+        if 'X_smogn' not in locals() or X_smogn is None:
             X_smogn, y_smogn = apply_smogn(X_train, y_train)
         X_smogn_ef, X_te_ef2 = apply_stgp_ef(X_smogn, y_smogn, X_test)
-        all_results['SMOGN+STGP-EF'] = evaluate_regressors(
-            X_smogn_ef, y_smogn, X_te_ef2, y_test
-        )
+        all_results['SMOGN+STGP-EF'] = evaluate_regressors(X_smogn_ef, y_smogn, X_te_ef2, y_test)
     except Exception as e:
         print(f"    SMOGN+STGP-EF error: {e}")
         all_results['SMOGN+STGP-EF'] = nan_results
@@ -343,144 +426,81 @@ def run_all_scenarios(df, input_cols, target_col):
     print("  Completed.\n")
     return all_results
 
-
-# ═══════════════════════════════════════════════════════════════════
-#  ANALYSIS RUNNERS - SATURATED AND SUPERHEATED STEAM
-# ═══════════════════════════════════════════════════════════════════
+# ── HATA ÇÖZÜMÜ: Fonksiyon İsimleri Notebook ile Uyumlulaştırıldı ──
 def run_saturated_analysis(df):
-    """Runs analysis for all target outputs in saturated steam."""
+    """Doymuş Buhar Analizi"""
     print("\n" + "▓" * 60)
-    print("  SATURATED STEAM ANALYSIS")
+    print("  DOYMUŞ BUHAR ANALİZİ")
     print("▓" * 60)
     all_target_results = {}
     for target in SATURATED_OUTPUTS:
         all_target_results[target] = run_all_scenarios(df, SATURATED_INPUTS, target)
     return all_target_results
 
-
 def run_superheated_analysis(df):
-    """Runs analysis for all target outputs in superheated steam."""
+    """Kızgın Buhar Analizi"""
     print("\n" + "▓" * 60)
-    print("  SUPERHEATED STEAM ANALYSIS")
+    print("  KIZGIN BUHAR ANALİZİ")
     print("▓" * 60)
     all_target_results = {}
     for target in SUPERHEATED_OUTPUTS:
         all_target_results[target] = run_all_scenarios(df, SUPERHEATED_INPUTS, target)
     return all_target_results
 
-
 # ═══════════════════════════════════════════════════════════════════
-#  RESULTS PROCESSING AND OUTPUT
+#  RESULTS PROCESSING AND SAVING
 # ═══════════════════════════════════════════════════════════════════
 def build_results_table(target_results):
-    """Converts multi-metric structure to table format."""
     rows = []
     for target, scenarios in target_results.items():
         for scenario, scores in scenarios.items():
             for algo, metrics in scores.items():
-                row = {
-                    'Target': target,
-                    'Scenario': scenario,
-                    'Algorithm': algo
-                }
-                row.update(metrics)  # Add metrics dictionary to row
+                row = {'Target': target, 'Scenario': scenario, 'Algorithm': algo}
+                row.update(metrics)
                 rows.append(row)
     return pd.DataFrame(rows)
 
-
 def show_best_results(results_df):
-    """Returns best (Algorithm, Scenario) combination per target based on Test_R2."""
     idx = results_df.groupby('Target')['Test_R2'].idxmax()
     cols = ['Target', 'Scenario', 'Algorithm', 'Test_R2', 'Train_R2', 'Test_RMSE', 'Test_MAPE']
     best = results_df.loc[idx, [c for c in cols if c in results_df.columns]]
     return best.reset_index(drop=True)
 
-
 def compare_scenarios(results_df):
-    """Pivots Test_R2 values by target and algorithm."""
-    pivot = results_df.pivot_table(
-        index=['Target', 'Algorithm'],
-        columns='Scenario',
-        values='Test_R2'
-    )
-    pivot = pivot.reindex(columns=[s for s in SCENARIO_ORDER if s in pivot.columns])
-    return pivot
-
+    pivot = results_df.pivot_table(index=['Target', 'Algorithm'], columns='Scenario', values='Test_R2')
+    return pivot.reindex(columns=[s for s in SCENARIO_ORDER if s in pivot.columns])
 
 def target_summary(results_df, target_col):
-    """Summary of single target based on Test_R2 metrics."""
     sub = results_df[results_df['Target'] == target_col]
-    pivot = sub.pivot_table(
-        index='Algorithm',
-        columns='Scenario',
-        values='Test_R2'
-    )
-    pivot = pivot.reindex(columns=[s for s in SCENARIO_ORDER if s in pivot.columns])
-    return pivot
-
-
-# ═══════════════════════════════════════════════════════════════════
-#  RESULTS SAVING - WIDE FORMAT CONVERSION
-# ═══════════════════════════════════════════════════════════════════
+    pivot = sub.pivot_table(index='Algorithm', columns='Scenario', values='Test_R2')
+    return pivot.reindex(columns=[s for s in SCENARIO_ORDER if s in pivot.columns])
 
 def save_wide_results(df_long, path):
-    """
-    Converts all metrics to wide format by scenario and saves.
-    Creates comparison summary based on Test_R2.
-    """
     metrics = ['Train_R2', 'Test_R2', 'Train_RMSE', 'Test_RMSE', 'Train_MAPE', 'Test_MAPE']
     index_cols = [c for c in ['Dataset', 'Target', 'Algorithm'] if c in df_long.columns]
     
-    pivot = df_long.pivot_table(
-        index=index_cols,
-        columns='Senaryo',
-        values=metrics
-    )
-    
-    # Flatten multi-index (e.g., Base_Test_R2)
+    pivot = df_long.pivot_table(index=index_cols, columns='Senaryo', values=metrics)
     pivot.columns = [f"{col[1]}_{col[0]}" for col in pivot.columns]
     
-    # Reorder columns by Scenario > Metric
-    ordered_cols = []
-    for s in SCENARIO_ORDER:
-        for m in metrics:
-            col_name = f"{s}_{m}"
-            if col_name in pivot.columns:
-                ordered_cols.append(col_name)
-                
+    ordered_cols = [f"{s}_{m}" for s in SCENARIO_ORDER for m in metrics if f"{s}_{m}" in pivot.columns]
     pivot = pivot.reindex(columns=ordered_cols)
 
-    # Determine winner (Max) based on Test_R2
     test_r2_cols = [f"{s}_Test_R2" for s in SCENARIO_ORDER if f"{s}_Test_R2" in pivot.columns]
     pivot['Max_Test_R2'] = pivot[test_r2_cols].max(axis=1)
-    # Remove _Test_R2 suffix and keep only scenario name
     pivot['Max_Scenario'] = pivot[test_r2_cols].idxmax(axis=1).str.replace('_Test_R2', '')
 
-    wide = pivot.reset_index()
-    wide = wide.sort_values(index_cols).reset_index(drop=True)
+    wide = pivot.reset_index().sort_values(index_cols).reset_index(drop=True)
     wide.to_csv(path, index=False, float_format='%.6f')
     
     save_comparison_summary(wide, path)
     return wide
 
-
-# ═══════════════════════════════════════════════════════════════════
-#  COMPARISON SUMMARY - APPEND TO CSV
-# ═══════════════════════════════════════════════════════════════════
 def save_comparison_summary(wide_df, path):
-    """
-    Appends comparison reports based on Test_R2 metrics
-    to the saved CSV file.
-    """
     scenarios = ['Base', 'SMOGN', 'STGP-EF', 'SMOGN+STGP-EF']
     cols = [s for s in scenarios if f"{s}_Test_R2" in wide_df.columns]
 
     with open(path, 'a', encoding='utf-8-sig', newline='') as f:
-
-        # ── 1. Scenario-Based Comparison ───────────────────────
-        f.write('\n')
-        f.write('SCENARIO BASED COMPARISON (Based on Test_R2)\n')
-        f.write('Scenario,Win_Count,Win_Rate_%,Scenario_Mean_Test_R2,Winner_Mean_Max_Test_R2\n')
+        f.write('\nSCENARIO BASED COMPARISON\nScenario,Win_Count,Win_Rate_%,Scenario_Mean_Test_R2,Winner_Mean_Max_Test_R2\n')
         for s in cols:
             col_name = f"{s}_Test_R2"
             win_count = int((wide_df['Max_Scenario'] == s).sum())
@@ -490,165 +510,68 @@ def save_comparison_summary(wide_df, path):
             mean_max  = round(wide_df.loc[mask, 'Max_Test_R2'].mean(), 6) if win_count > 0 else ''
             f.write(f'{s},{win_count},{win_rate},{mean_s},{mean_max}\n')
 
-        # ── 2. Algorithm-Based Comparison ──────────────────────
-        f.write('\n')
-        f.write('ALGORITHM BASED COMPARISON (Based on Test_R2)\n')
+        f.write('\nALGORITHM BASED COMPARISON\n')
         header = ('Algorithm,' + ','.join([f"Mean_{s}_Test_R2" for s in cols]) +
-                  ',Mean_Max_Test_R2,Best_Scenario,' +
-                  ','.join([f"Win_Count_{s}" for s in cols]) + '\n')
+                  ',Mean_Max_Test_R2,Best_Scenario,' + ','.join([f"Win_Count_{s}" for s in cols]) + '\n')
         f.write(header)
         
         for alg in sorted(wide_df['Algorithm'].unique()):
-            grp  = wide_df[wide_df['Algorithm'] == alg]
+            grp = wide_df[wide_df['Algorithm'] == alg]
             means = [round(grp[f"{s}_Test_R2"].mean(), 6) for s in cols]
-            mean_max = round(grp['Max_Test_R2'].mean(), 6)
-            
-            # Calculate best scenario safely (handle ties and empty cases)
             modes = grp['Max_Scenario'].mode()
             best = modes[0] if not modes.empty else "Unknown"
-            
-            wins   = grp['Max_Scenario'].value_counts().to_dict()
+            wins = grp['Max_Scenario'].value_counts().to_dict()
             wins_vals = [wins.get(s, 0) for s in cols]
-            
-            row = [alg] + means + [mean_max, best] + wins_vals
+            row = [alg] + means + [round(grp['Max_Test_R2'].mean(), 6), best] + wins_vals
             f.write(','.join(str(x) for x in row) + '\n')
-
 
 # ═══════════════════════════════════════════════════════════════════
 #  SHAP EXPLAINABILITY ANALYSIS
 # ═══════════════════════════════════════════════════════════════════
-
 def calculate_shap_values(model, X_data):
-    """
-    Calculates SHAP values for a trained tree-based model 
-    (Random Forest, Extra Trees, Evolutionary Forest, etc.).
-    
-    Parameters:
-    model: Trained machine learning model (scikit-learn compatible).
-    X_data (pd.DataFrame): Dataset for which SHAP values will be calculated (typically X_test).
-    
-    Returns:
-    explainer: SHAP explainer object.
-    shap_values: Calculated SHAP values.
-    """
-    # Use TreeExplainer for tree-based models
     explainer = shap.TreeExplainer(model)
-    shap_values = explainer.shap_values(X_data)
-    
-    return explainer, shap_values
+    return explainer, explainer.shap_values(X_data)
 
-
-# ── Global Feature Importance ─────────────────────────────────────
 def plot_global_feature_importance(shap_values, X_data, save_path=None):
-    """
-    Plots global feature importance as a bar chart.
-    Shows which STGP-EF features or physical parameters are most dominant.
-    
-    Parameters:
-    shap_values: SHAP values returned from calculate_shap_values method.
-    X_data (pd.DataFrame): Dataset used to obtain feature names.
-    save_path (str, optional): File path where the plot will be saved.
-    """
     plt.figure(figsize=(10, 6))
     shap.summary_plot(shap_values, X_data, plot_type="bar", show=False)
-    plt.title("Global Feature Importance", fontsize=14)
+    plt.title("Küresel Özellik Önemi (Global Feature Importance)", fontsize=14)
     plt.tight_layout()
-    
     if save_path:
         os.makedirs(os.path.dirname(save_path), exist_ok=True)
         plt.savefig(save_path, dpi=300, bbox_inches='tight')
-        print(f"Plot saved: {save_path}")
-        
     plt.show()
 
-
-# ── SHAP Summary Plot (Bee Swarm) ──────────────────────────────────
 def plot_global_summary(shap_values, X_data, save_path=None):
-    """
-    Plots density (bee swarm) plot showing how high/low values of variables
-    affect the target variable (enthalpy, specific volume, etc.).
-    """
     plt.figure(figsize=(10, 6))
     shap.summary_plot(shap_values, X_data, show=False)
-    plt.title("SHAP Summary Plot", fontsize=14)
+    plt.title("SHAP Özet Grafiği (SHAP Summary Plot)", fontsize=14)
     plt.tight_layout()
-    
     if save_path:
         os.makedirs(os.path.dirname(save_path), exist_ok=True)
         plt.savefig(save_path, dpi=300, bbox_inches='tight')
-        print(f"Plot saved: {save_path}")
-        
     plt.show()
 
-
-# ── Local Interpretability (Waterfall) ─────────────────────────────
 def plot_local_waterfall(explainer, shap_values, X_data, instance_index=0, save_path=None):
-    """
-    Explains how a prediction is formed for a specific data point (row).
-    
-    Parameters:
-    explainer: SHAP explainer object.
-    shap_values: SHAP values matrix for the corresponding model.
-    X_data (pd.DataFrame): Dataset being analyzed.
-    instance_index (int): Row index of the specific data point to examine.
-    """
-    # Create Explanation object for waterfall plot (SHAP 0.40+ versions)
-    # If shap_values is already an Explanation object, no reshaping needed.
-    
     plt.figure(figsize=(10, 6))
-    
     if isinstance(shap_values, shap.Explanation):
         shap.plots.waterfall(shap_values[instance_index], show=False)
     else:
-        # For backward compatibility or raw numpy array conversion
-        expected_value = explainer.expected_value
-        if isinstance(expected_value, np.ndarray):
-            expected_value = expected_value[0]
-            
-        shap.plots._waterfall.waterfall_legacy(
-            expected_value, 
-            shap_values[instance_index], 
-            X_data.iloc[instance_index], 
-            show=False
-        )
-        
-    plt.title(f"Local Interpretability - Index: {instance_index}", fontsize=14)
+        expected_value = explainer.expected_value[0] if isinstance(explainer.expected_value, np.ndarray) else explainer.expected_value
+        shap.plots._waterfall.waterfall_legacy(expected_value, shap_values[instance_index], X_data.iloc[instance_index], show=False)
+    plt.title(f"Yerel Açıklanabilirlik - İndeks: {instance_index}", fontsize=14)
     plt.tight_layout()
-    
     if save_path:
         os.makedirs(os.path.dirname(save_path), exist_ok=True)
         plt.savefig(save_path, dpi=300, bbox_inches='tight')
-        print(f"Plot saved: {save_path}")
-        
     plt.show()
 
-
-# ── Thermodynamic Dependence Analysis ──────────────────────────────
 def plot_thermodynamic_dependence(shap_values, X_data, feature_name, interaction_feature="auto", save_path=None):
-    """
-    Plots SHAP Dependence plot to verify if thermodynamic rules 
-    are learned by the model.
-    
-    Parameters:
-    shap_values: SHAP values.
-    X_data (pd.DataFrame): Dataset being analyzed.
-    feature_name (str): Independent variable to examine on X-axis (e.g., 'Pressure (P, kPa)').
-    interaction_feature (str): Variable to be added as color scale (Default: 'auto').
-    """
     plt.figure(figsize=(8, 6))
-    shap.dependence_plot(
-        feature_name, 
-        shap_values, 
-        X_data, 
-        interaction_index=interaction_feature,
-        show=False
-    )
-    plt.title(f"Thermodynamic Dependence Analysis: {feature_name}", fontsize=14)
+    shap.dependence_plot(feature_name, shap_values, X_data, interaction_index=interaction_feature, show=False)
+    plt.title(f"Termodinamik Bağımlılık Analizi: {feature_name}", fontsize=14)
     plt.tight_layout()
-    
     if save_path:
         os.makedirs(os.path.dirname(save_path), exist_ok=True)
         plt.savefig(save_path, dpi=300, bbox_inches='tight')
-        print(f"Plot saved: {save_path}")
-        
     plt.show()

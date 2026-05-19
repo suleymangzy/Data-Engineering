@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 import logging
 import re
-import gc # RAM yönetimi için eklendi
+import gc 
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -24,7 +24,7 @@ from sklearn.ensemble import (
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import (
     r2_score, mean_squared_error, 
-    mean_absolute_percentage_error
+    mean_absolute_percentage_error, mean_absolute_error
 )
 from sklearn.preprocessing import StandardScaler
 from sklearn.neighbors import KNeighborsRegressor, NearestNeighbors
@@ -133,7 +133,7 @@ def get_regressors():
 # ═══════════════════════════════════════════════════════════════════
 #  DATA PREPARATION - TRAIN/TEST SPLIT AND SCALING
 # ═══════════════════════════════════════════════════════════════════
-def prepare_data(df, input_cols, target_col, test_size=0.3, random_state=42):
+def prepare_data(df, input_cols, target_col, test_size=0.2, random_state=42):
     """Splits data into train/test sets and applies StandardScaler normalization."""
     X = df[input_cols].values.astype(np.float64)
     y = df[target_col].values.astype(np.float64)
@@ -216,7 +216,7 @@ def apply_smogn(X_train, y_train, k=5, rare_threshold_low=15, rare_threshold_hig
     return X_final, y_final
 
 # ═══════════════════════════════════════════════════════════════════
-#  FEATURE ENGINEERING - STGP-EF (Feature Engineering)
+#  FEATURE ENGINEERING - STGP-EF (FEATURE CONSTRUCTION)
 # ═══════════════════════════════════════════════════════════════════
 def format_math_expr(expr: str) -> str:
     expr = str(expr).strip()
@@ -257,7 +257,7 @@ def extract_symbolic_transformer_formulas(stgp_model, n_features: int = 10) -> d
             programs = stgp_model._best_programs
             n_to_show = min(n_features, len(programs))
             logger.info(f"\n{'─' * 78}")
-            logger.info(f"SYMBOLIC REGRESSION (STGP) - Generated Features ({n_to_show} of {len(programs)})")
+            logger.info("SYMBOLIC TRANSFORMER (STGP) - Generated Features")
             logger.info(f"{'─' * 78}")
             for idx in range(n_to_show):
                 formula = format_math_expr(str(programs[idx]))
@@ -275,7 +275,7 @@ def extract_ef_formulas(ef_model, n_features: int = 10) -> dict:
             if hof is not None:
                 n_to_show = min(n_features, len(hof))
                 logger.info(f"\n{'─' * 78}")
-                logger.info(f"EVOLUTIONARY FOREST (EF) - Generated Features ({n_to_show} of {len(hof)})")
+                logger.info("EVOLUTIONARY FOREST (EF) - Generated Features")
                 logger.info(f"{'─' * 78}")
                 for idx in range(n_to_show):
                     formula = format_math_expr(str(hof[idx]))
@@ -319,7 +319,7 @@ def apply_stgp_ef(X_train, y_train, X_test, n_best_features=10):
     X_train_ef = np.empty((X_train.shape[0], 0))
     X_test_ef  = np.empty((X_test.shape[0], 0))
     try:
-        ef_model = EvolutionaryForestRegressor(random_state=42, basic_primitives="default", verbose=False)
+        ef_model = EvolutionaryForestRegressor(random_state=42, basic_primitives="default", verbose=False, n_process=1)
         # population_evaluation printlerini susturmak için stdout yönlendirmesi
         with open(os.devnull, 'w') as f, redirect_stdout(f):
             ef_model.fit(X_train, y_train)
@@ -354,7 +354,7 @@ def apply_stgp_ef(X_train, y_train, X_test, n_best_features=10):
 def evaluate_regressors(X_train, y_train, X_test, y_test):
     regressors = get_regressors()
     results = {}
-    nan_template = {'Train_R2': np.nan, 'Test_R2': np.nan, 'Train_RMSE': np.nan, 'Test_RMSE': np.nan, 'Train_MAPE': np.nan, 'Test_MAPE': np.nan}
+    nan_template = {'Train_R2': np.nan, 'Test_R2': np.nan, 'Train_RMSE': np.nan, 'Test_RMSE': np.nan, 'Train_MAE': np.nan, 'Test_MAE': np.nan, 'Train_MAPE': np.nan, 'Test_MAPE': np.nan}
 
     for name, model in regressors.items():
         try:
@@ -368,6 +368,8 @@ def evaluate_regressors(X_train, y_train, X_test, y_test):
                 'Test_R2': round(r2_score(y_test, y_test_pred), 6),
                 'Train_RMSE': round(np.sqrt(mean_squared_error(y_train, y_train_pred)), 6),
                 'Test_RMSE': round(np.sqrt(mean_squared_error(y_test, y_test_pred)), 6),
+                'Train_MAE': round(mean_absolute_error(y_train, y_train_pred), 6),
+                'Test_MAE': round(mean_absolute_error(y_test, y_test_pred), 6),
                 'Train_MAPE': round(mean_absolute_percentage_error(y_train, y_train_pred), 6),
                 'Test_MAPE': round(mean_absolute_percentage_error(y_test, y_test_pred), 6)
             }
@@ -380,6 +382,32 @@ def evaluate_regressors(X_train, y_train, X_test, y_test):
 # ═══════════════════════════════════════════════════════════════════
 #  SCENARIO ANALYSIS 
 # ═══════════════════════════════════════════════════════════════════
+def run_hybrid_scenarios(df, input_cols, target_col):
+    print(f"\n{'='*60}")
+    print(f"  Target: {target_col}  |  Input: {input_cols}")
+    print(f"{'='*60}")
+
+    X_train, X_test, y_train, y_test, _, _ = prepare_data(df, input_cols, target_col)
+    all_results = {}
+    empty_metrics = {k: np.nan for k in ['Train_R2', 'Test_R2', 'Train_RMSE', 'Test_RMSE', 'Train_MAE', 'Test_MAE', 'Train_MAPE', 'Test_MAPE']}
+
+    # 1) Base
+    print("  [1/2] Base training...")
+    all_results['Base'] = evaluate_regressors(X_train, y_train, X_test, y_test)
+    nan_results = {name: empty_metrics.copy() for name in all_results['Base']}
+
+    # 2) STGP-EF
+    print("  [2/2] STGP-EF training...")
+    try:
+        X_tr_ef, X_te_ef = apply_stgp_ef(X_train, y_train, X_test)
+        all_results['STGP-EF'] = evaluate_regressors(X_tr_ef, y_train, X_te_ef, y_test)
+    except Exception as e:
+        print(f"    STGP-EF error: {e}")
+        all_results['STGP-EF'] = nan_results
+
+    print("  Completed.\n")
+    return all_results
+
 def run_all_scenarios(df, input_cols, target_col):
     print(f"\n{'='*60}")
     print(f"  Target: {target_col}  |  Input: {input_cols}")
@@ -387,7 +415,7 @@ def run_all_scenarios(df, input_cols, target_col):
 
     X_train, X_test, y_train, y_test, _, _ = prepare_data(df, input_cols, target_col)
     all_results = {}
-    empty_metrics = {k: np.nan for k in ['Train_R2', 'Test_R2', 'Train_RMSE', 'Test_RMSE', 'Train_MAPE', 'Test_MAPE']}
+    empty_metrics = {k: np.nan for k in ['Train_R2', 'Test_R2', 'Train_RMSE', 'Test_RMSE', 'Train_MAE', 'Test_MAE', 'Train_MAPE', 'Test_MAPE']}
 
     # 1) Base
     print("  [1/4] Base training...")
@@ -426,7 +454,9 @@ def run_all_scenarios(df, input_cols, target_col):
     print("  Completed.\n")
     return all_results
 
-# ── HATA ÇÖZÜMÜ: Fonksiyon İsimleri Notebook ile Uyumlulaştırıldı ──
+# ═══════════════════════════════════════════════════════════════════
+#  MAIN ANALYSIS FUNCTIONS FOR SATURATED AND SUPERHEATED SCENARIOS
+# ═══════════════════════════════════════════════════════════════════
 def run_saturated_analysis(df):
     """Doymuş Buhar Analizi"""
     print("\n" + "▓" * 60)
@@ -448,6 +478,29 @@ def run_superheated_analysis(df):
     return all_target_results
 
 # ═══════════════════════════════════════════════════════════════════
+#  MAIN ANALYSIS FUNCTIONS FOR HYBRID SCENARIOS (STGP-EF ONLY)
+# ═══════════════════════════════════════════════════════════════════
+def run_saturated_hybrid_analysis(df):
+    """Doymuş Buhar Analizi"""
+    print("\n" + "▓" * 60)
+    print("  DOYMUŞ BUHAR ANALİZİ")
+    print("▓" * 60)
+    all_target_results = {}
+    for target in SATURATED_OUTPUTS:
+        all_target_results[target] = run_hybrid_scenarios(df, SATURATED_INPUTS, target)
+    return all_target_results
+
+def run_superheated_hybrid_analysis(df):
+    """Kızgın Buhar Analizi"""
+    print("\n" + "▓" * 60)
+    print("  KIZGIN BUHAR ANALİZİ")
+    print("▓" * 60)
+    all_target_results = {}
+    for target in SUPERHEATED_OUTPUTS:
+        all_target_results[target] = run_hybrid_scenarios(df, SUPERHEATED_INPUTS, target)
+    return all_target_results
+
+# ═══════════════════════════════════════════════════════════════════
 #  RESULTS PROCESSING AND SAVING
 # ═══════════════════════════════════════════════════════════════════
 def build_results_table(target_results):
@@ -462,7 +515,7 @@ def build_results_table(target_results):
 
 def show_best_results(results_df):
     idx = results_df.groupby('Target')['Test_R2'].idxmax()
-    cols = ['Target', 'Scenario', 'Algorithm', 'Test_R2', 'Train_R2', 'Test_RMSE', 'Test_MAPE']
+    cols = ['Target', 'Scenario', 'Algorithm', 'Test_R2','Test_RMSE', 'Test_MAE', 'Test_MAPE']
     best = results_df.loc[idx, [c for c in cols if c in results_df.columns]]
     return best.reset_index(drop=True)
 
@@ -476,10 +529,10 @@ def target_summary(results_df, target_col):
     return pivot.reindex(columns=[s for s in SCENARIO_ORDER if s in pivot.columns])
 
 def save_wide_results(df_long, path):
-    metrics = ['Train_R2', 'Test_R2', 'Train_RMSE', 'Test_RMSE', 'Train_MAPE', 'Test_MAPE']
-    index_cols = [c for c in ['Dataset', 'Target', 'Algorithm'] if c in df_long.columns]
+    metrics = ['Train_R2', 'Test_R2', 'Train_RMSE', 'Test_RMSE', 'Train_MAE', 'Test_MAE', 'Train_MAPE', 'Test_MAPE']
+    index_cols = [c for c in ['Dataset', 'Veri Seti', 'Target', 'Algorithm'] if c in df_long.columns]
     
-    pivot = df_long.pivot_table(index=index_cols, columns='Senaryo', values=metrics)
+    pivot = df_long.pivot_table(index=index_cols, columns='Scenario', values=metrics)
     pivot.columns = [f"{col[1]}_{col[0]}" for col in pivot.columns]
     
     ordered_cols = [f"{s}_{m}" for s in SCENARIO_ORDER for m in metrics if f"{s}_{m}" in pivot.columns]
@@ -524,54 +577,3 @@ def save_comparison_summary(wide_df, path):
             wins_vals = [wins.get(s, 0) for s in cols]
             row = [alg] + means + [round(grp['Max_Test_R2'].mean(), 6), best] + wins_vals
             f.write(','.join(str(x) for x in row) + '\n')
-
-# ═══════════════════════════════════════════════════════════════════
-#  SHAP EXPLAINABILITY ANALYSIS
-# ═══════════════════════════════════════════════════════════════════
-def calculate_shap_values(model, X_data):
-    explainer = shap.TreeExplainer(model)
-    return explainer, explainer.shap_values(X_data)
-
-def plot_global_feature_importance(shap_values, X_data, save_path=None):
-    plt.figure(figsize=(10, 6))
-    shap.summary_plot(shap_values, X_data, plot_type="bar", show=False)
-    plt.title("Küresel Özellik Önemi (Global Feature Importance)", fontsize=14)
-    plt.tight_layout()
-    if save_path:
-        os.makedirs(os.path.dirname(save_path), exist_ok=True)
-        plt.savefig(save_path, dpi=300, bbox_inches='tight')
-    plt.show()
-
-def plot_global_summary(shap_values, X_data, save_path=None):
-    plt.figure(figsize=(10, 6))
-    shap.summary_plot(shap_values, X_data, show=False)
-    plt.title("SHAP Özet Grafiği (SHAP Summary Plot)", fontsize=14)
-    plt.tight_layout()
-    if save_path:
-        os.makedirs(os.path.dirname(save_path), exist_ok=True)
-        plt.savefig(save_path, dpi=300, bbox_inches='tight')
-    plt.show()
-
-def plot_local_waterfall(explainer, shap_values, X_data, instance_index=0, save_path=None):
-    plt.figure(figsize=(10, 6))
-    if isinstance(shap_values, shap.Explanation):
-        shap.plots.waterfall(shap_values[instance_index], show=False)
-    else:
-        expected_value = explainer.expected_value[0] if isinstance(explainer.expected_value, np.ndarray) else explainer.expected_value
-        shap.plots._waterfall.waterfall_legacy(expected_value, shap_values[instance_index], X_data.iloc[instance_index], show=False)
-    plt.title(f"Yerel Açıklanabilirlik - İndeks: {instance_index}", fontsize=14)
-    plt.tight_layout()
-    if save_path:
-        os.makedirs(os.path.dirname(save_path), exist_ok=True)
-        plt.savefig(save_path, dpi=300, bbox_inches='tight')
-    plt.show()
-
-def plot_thermodynamic_dependence(shap_values, X_data, feature_name, interaction_feature="auto", save_path=None):
-    plt.figure(figsize=(8, 6))
-    shap.dependence_plot(feature_name, shap_values, X_data, interaction_index=interaction_feature, show=False)
-    plt.title(f"Termodinamik Bağımlılık Analizi: {feature_name}", fontsize=14)
-    plt.tight_layout()
-    if save_path:
-        os.makedirs(os.path.dirname(save_path), exist_ok=True)
-        plt.savefig(save_path, dpi=300, bbox_inches='tight')
-    plt.show()

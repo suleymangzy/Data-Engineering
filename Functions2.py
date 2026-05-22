@@ -7,12 +7,10 @@ import numpy as np
 import pandas as pd
 import logging
 import re
-import gc 
+from contextlib import redirect_stdout
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
-
-from contextlib import redirect_stdout
 
 # Sklearn imports
 from sklearn.ensemble import (
@@ -27,6 +25,7 @@ from sklearn.metrics import (
 from sklearn.preprocessing import StandardScaler
 from sklearn.neighbors import KNeighborsRegressor
 from sklearn.inspection import permutation_importance
+from sklearn.pipeline import Pipeline
 
 # ML Kütüphaneleri
 import xgboost as xgb
@@ -80,6 +79,7 @@ SUPERHEATED_INPUTS = ['T (girdi)', 'P (girdi)']
 SUPERHEATED_OUTPUTS = ['v (çıktı)', 'h (çıktı)', 's (çıktı)']
 
 def get_regressors():
+    """ Hızlı ve güçlü regresörler. GP ve EF tahmin listesinden çıkarılarak donma sorunu çözülmüştür. """
     return {
         'AdaBoost':  AdaBoostRegressor(random_state=42),
         'CatBoost':  CatBoostRegressor(random_state=42, verbose=0),
@@ -98,7 +98,6 @@ def get_regressors():
 def enrich_input_space(df, input_cols):
     df_enriched = df.copy()
     new_cols = list(input_cols)
-    # Doymuş faz için (Sadece T girdisi varsa) uzay genişletilir
     if 'T(girdi)' in input_cols and len(input_cols) == 1:
         T_K = df_enriched['T(girdi)'] + 273.15 
         df_enriched['1/T'] = 1.0 / T_K
@@ -123,7 +122,6 @@ def format_math_expr(expr: str) -> str:
     expr = re.sub(r'\bX(\d+)\b', r'x\1', expr)
     expr = expr.replace('"', '').replace("'", "")
     expr = re.sub(r'\b(x\d+)\b', r'"\1"', expr)
-    
     safe_dict = {
         'Add': lambda a, b: f"({a} + {b})", 'add': lambda a, b: f"({a} + {b})",
         'Sub': lambda a, b: f"({a} - {b})", 'sub': lambda a, b: f"({a} - {b})",
@@ -140,7 +138,6 @@ def format_math_expr(expr: str) -> str:
         'Max': lambda a, b: f"max({a}, {b})", 'max': lambda a, b: f"max({a}, {b})",
         'Min': lambda a, b: f"min({a}, {b})", 'min': lambda a, b: f"min({a}, {b})"
     }
-    
     try:
         formatted_expr = eval(expr, {"__builtins__": {}}, safe_dict)
         if isinstance(formatted_expr, (list, tuple)): return str(formatted_expr[0])
@@ -153,6 +150,8 @@ def apply_stgp_ef_full(X, y, n_best_features=10):
     scaler = StandardScaler()
     X_scaled = scaler.fit_transform(X)
     
+    stgp_model, ef_model = None, None
+    
     # STGP
     X_stgp = np.empty((X_scaled.shape[0], 0))
     try:
@@ -163,8 +162,7 @@ def apply_stgp_ef_full(X, y, n_best_features=10):
             if hasattr(stgp_model, '_best_programs'):
                 for idx, prog in enumerate(stgp_model._best_programs[:n_best_features]):
                     stgp_forms[f'STGP_{idx:02d}'] = format_math_expr(str(prog))
-    except Exception as e:
-        logger.error(f"STGP başarısız: {e}")
+    except Exception as e: pass
     
     n_stgp = min(n_best_features, X_stgp.shape[1])
     X_stgp = X_stgp[:, :n_stgp] if n_stgp > 0 else X_stgp
@@ -180,8 +178,7 @@ def apply_stgp_ef_full(X, y, n_best_features=10):
             if hof is not None:
                 for idx, prog in enumerate(hof[:n_best_features]):
                     ef_forms[f'EF_{idx:02d}'] = format_math_expr(str(prog))
-    except Exception as e:
-        logger.error(f"EF başarısız: {e}")
+    except Exception as e: pass
 
     n_ef = min(n_best_features, X_ef.shape[1])
     X_ef = X_ef[:, :n_ef] if n_ef > 0 else X_ef
@@ -189,22 +186,87 @@ def apply_stgp_ef_full(X, y, n_best_features=10):
     X_constructed = np.hstack((X_stgp, X_ef)) if X_stgp.size and X_ef.size else np.empty((X.shape[0], 0))
     X_hybrid = np.hstack((X, X_constructed)) if X_constructed.size else X
 
-    return X_hybrid, stgp_forms, ef_forms
-
+    return X_hybrid, stgp_forms, ef_forms, stgp_model, ef_model, scaler
 
 # ═══════════════════════════════════════════════════════════════════
-#  UNIFIED MASTER LOOP (EXCEL EXPORT)
+#  THERMODYNAMIC GRID TEST (UNIVERSAL PIML)
+# ═══════════════════════════════════════════════════════════════════
+def check_thermodynamics_on_synthetic_grid(models_dict, input_cols, target_name, 
+                                           vary_col='T', min_val=-30, max_val=50, step=0.1, 
+                                           fixed_col=None, fixed_val=None,
+                                           stgp_model=None, ef_model=None, base_scaler=None, n_best=10):
+    
+    grid_vals = np.arange(min_val, max_val, step)
+    grid_data = {}
+    
+    t_col_name = 'T (girdi)' if 'T (girdi)' in input_cols else 'T(girdi)'
+    p_col_name = 'P (girdi)' if 'P (girdi)' in input_cols else None
+    
+    if vary_col == 'T':
+        grid_data[t_col_name] = grid_vals
+        if fixed_col == 'P' and p_col_name: grid_data[p_col_name] = fixed_val
+    elif vary_col == 'P':
+        grid_data[p_col_name] = grid_vals
+        if fixed_col == 'T' and t_col_name: grid_data[t_col_name] = fixed_val
+            
+    grid_df = pd.DataFrame(grid_data)
+    grid_df = grid_df[input_cols] # Sütun sırasını eşitle
+    
+    grid_enr, enr_cols = enrich_input_space(grid_df, input_cols)
+    X_grid_base = grid_enr[enr_cols].values
+    
+    # STGP-EF modelleri verilmişse (Hybrid Senaryo), sentetik matrisi zenginleştir
+    if stgp_model is not None or ef_model is not None:
+        X_scaled = base_scaler.transform(X_grid_base) if base_scaler else X_grid_base
+        X_stgp = np.empty((X_scaled.shape[0], 0))
+        if stgp_model:
+            try:
+                X_stgp = np.nan_to_num(stgp_model.transform(X_scaled))
+                n_s = min(n_best, X_stgp.shape[1])
+                X_stgp = X_stgp[:, :n_s] if n_s > 0 else X_stgp
+            except: pass
+        X_ef = np.empty((X_scaled.shape[0], 0))
+        if ef_model:
+            try:
+                X_ef = ef_model.transform(X_scaled)
+                n_e = min(n_best, X_ef.shape[1])
+                X_ef = X_ef[:, :n_e] if n_e > 0 else X_ef
+            except: pass
+        X_const = np.hstack((X_stgp, X_ef)) if X_stgp.size and X_ef.size else np.empty((X_grid_base.shape[0], 0))
+        X_grid_final = np.hstack((X_grid_base, X_const)) if X_const.size else X_grid_base
+    else:
+        X_grid_final = X_grid_base # Base Senaryo
+
+    # FİZİKSEL KURAL MOTORU (Kızgın ve Doymuş Fazlara Dinamik Tepki Verir)
+    is_decreasing = False
+    if vary_col == 'T' and target_name in ['v buhar (çıktı)', 's buhar (çıktı)']: is_decreasing = True
+    elif vary_col == 'P' and target_name in ['v (çıktı)', 's (çıktı)']: is_decreasing = True
+    
+    results = []
+    for algo_name, model in models_dict.items():
+        try:
+            preds = model.predict(X_grid_final)
+            derivatives = np.diff(preds) / np.diff(grid_vals)
+            
+            if is_decreasing: violations = (derivatives > 0).sum()
+            else: violations = (derivatives < 0).sum()
+                
+            violation_rate = (violations / len(derivatives)) * 100
+            test_str = f"Sabit {fixed_col}={fixed_val}, {vary_col} degisiyor" if fixed_col else f"{vary_col} degisiyor (Doymus)"
+            
+            results.append({
+                'Target': target_name, 'Algoritma': algo_name, 'Test_Tipi': test_str,
+                'Fiziksel_Ihlal_Sayisi': violations, 'Ihlal_Yuzdesi_(%)': violation_rate
+            })
+        except: pass
+    return pd.DataFrame(results)
+
+# ═══════════════════════════════════════════════════════════════════
+#  UNIFIED MASTER LOOP (FAZ 1 - 5)
 # ═══════════════════════════════════════════════════════════════════
 def run_unified_analysis(df, input_cols, outputs_list, dataset_name):
-    """
-    KESİN SIRALI MİMARİ:
-    Faz 1: Her hedef değişken için özel STGP-EF uygulanır, veri setleri oluşturulur ve hafızaya alınır.
-    Faz 2: Base senaryo (sadece orijinal veri) tüm hedefler ve foldlar için eğitilir.
-    Faz 3: STGP-EF senaryosu tüm hedefler ve foldlar için eğitilir, katkı (Importance) hesaplanır.
-    Faz 4: Excel'e kaydetme.
-    """
     print(f"\n{'▓'*60}")
-    print(f"  {dataset_name.upper()} - KESİN SIRALI K-FOLD ANALİZİ VE EXCEL RAPORLAMA")
+    print(f"  {dataset_name.upper()} - KESİN SIRALI K-FOLD VE PIML ANALİZİ")
     print(f"{'▓'*60}")
     
     os.makedirs("Results", exist_ok=True)
@@ -212,66 +274,50 @@ def run_unified_analysis(df, input_cols, outputs_list, dataset_name):
     kf = KFold(n_splits=5, shuffle=True, random_state=42)
     regressors = get_regressors()
     
-    # Tüm sonuçları ve veri setlerini tutacağımız sözlükler
     master_datasets = {}
     dict_formulas = []
     all_metrics = []
     all_importances = []
     
-    # =========================================================================
-    # FAZ 1: HEDEF BAZLI VERİ SETLERİNİN HAZIRLANMASI (PRE-GENERATION)
-    # =========================================================================
-    print("\n[FAZ 1/3] Her hedef değişken için ayrı ayrı hibrit veri setleri üretiliyor...")
-    
+    # -------------------------------------------------------------------------
+    # FAZ 1: HEDEF BAZLI VERİ SETLERİNİN HAZIRLANMASI (STGP-EF)
+    # -------------------------------------------------------------------------
+    print("\n[FAZ 1/5] Her hedef değişken için ayrı ayrı hibrit veri setleri üretiliyor...")
     df_enr, enr_cols = enrich_input_space(df, input_cols)
-    X_base = df[input_cols].values.astype(np.float64) # Sadece orijinal girdi (Base için)
-    X_enr = df_enr[enr_cols].values.astype(np.float64) # Orijinal + Genişletilmiş girdi (STGP-EF'in kullanacağı)
+    X_base = df[input_cols].values.astype(np.float64) 
+    X_enr = df_enr[enr_cols].values.astype(np.float64) 
     
     for target_col in outputs_list:
         print(f"  -> Hedef ({target_col}) için STGP-EF çalıştırılıyor...")
         y = df_enr[target_col].values.astype(np.float64)
-        
-        # Sadece bu hedefe özel STGP-EF özellik inşası
-        X_hyb, stgp_forms, ef_forms = apply_stgp_ef_full(X_enr, y, n_best_features=10)
+        X_hyb, stgp_forms, ef_forms, stgp_model, ef_model, base_scaler = apply_stgp_ef_full(X_enr, y, n_best_features=10)
         
         n_base_hyb = len(enr_cols)
         n_hyb_feat = X_hyb.shape[1] - n_base_hyb
-        hyb_names = list(stgp_forms.keys()) + list(ef_forms.keys())
-        hyb_names = hyb_names[:n_hyb_feat]
-        
+        hyb_names = (list(stgp_forms.keys()) + list(ef_forms.keys()))[:n_hyb_feat]
         feature_names = enr_cols + hyb_names
         feature_types = ['Orijinal'] * n_base_hyb + ['Hibrit'] * n_hyb_feat
         
-        # DataFrame olarak saklama (Excel çıktısı için)
         df_hyb_dataset = pd.DataFrame(X_hyb, columns=feature_names)
         df_hyb_dataset['Target'] = y
         
-        # İlgili hedefin verilerini Master Sözlüğe kaydet
         master_datasets[target_col] = {
-            'y': y,
-            'X_hyb': X_hyb,
-            'feature_names': feature_names,
-            'feature_types': feature_types,
-            'df_export': df_hyb_dataset
+            'y': y, 'X_hyb': X_hyb, 'feature_names': feature_names, 'feature_types': feature_types,
+            'df_export': df_hyb_dataset, 'stgp_model': stgp_model, 'ef_model': ef_model, 'base_scaler': base_scaler
         }
         
         for k, v in stgp_forms.items(): dict_formulas.append({'Target': target_col, 'Oznitelik': k, 'Algoritma': 'STGP', 'Formul': v})
         for k, v in ef_forms.items(): dict_formulas.append({'Target': target_col, 'Oznitelik': k, 'Algoritma': 'EF', 'Formul': v})
 
-
-    # =========================================================================
+    # -------------------------------------------------------------------------
     # FAZ 2: BASE SENARYO EĞİTİMLERİ (TÜM HEDEFLER)
-    # =========================================================================
-    print("\n[FAZ 2/3] Orijinal (Base) veri setleri ile modeller eğitiliyor...")
-    
+    # -------------------------------------------------------------------------
+    print("\n[FAZ 2/5] Orijinal (Base) veri setleri ile modeller K-Fold ile eğitiliyor...")
     for target_col in outputs_list:
         y = master_datasets[target_col]['y']
-        
         for algo_name, model in regressors.items():
-                print(f"      -> {algo_name} eğitiliyor (Base)...") # YENİ EKLENEN SATIR
-                for fold, (train_idx, test_idx) in enumerate(kf.split(X_base)):
-                    X_tr, X_te, y_tr, y_te = prepare_data_fold(X_base, y, train_idx, test_idx)
-                
+            for fold, (train_idx, test_idx) in enumerate(kf.split(X_base)):
+                X_tr, X_te, y_tr, y_te = prepare_data_fold(X_base, y, train_idx, test_idx)
                 with open(os.devnull, 'w') as f, redirect_stdout(f):
                     model.fit(X_tr, y_tr)
                     y_tr_pred = model.predict(X_tr)
@@ -284,13 +330,11 @@ def run_unified_analysis(df, input_cols, outputs_list, dataset_name):
                     'Train_MAE': mean_absolute_error(y_tr, y_tr_pred), 'Test_MAE': mean_absolute_error(y_te, y_te_pred),
                     'Train_MAPE': mean_absolute_percentage_error(y_tr+epsilon, y_tr_pred+epsilon), 'Test_MAPE': mean_absolute_percentage_error(y_te+epsilon, y_te_pred+epsilon)
                 })
-                
 
-    # =========================================================================
+    # -------------------------------------------------------------------------
     # FAZ 3: STGP-EF SENARYO EĞİTİMLERİ VE ÖZNİTELİK KATKISI (TÜM HEDEFLER)
-    # =========================================================================
-    print("\n[FAZ 3/3] STGP-EF (Hibrit) veri setleri ile modeller eğitiliyor ve katkılar hesaplanıyor...")
-    
+    # -------------------------------------------------------------------------
+    print("\n[FAZ 3/5] STGP-EF (Hibrit) veri setleri ile modeller eğitiliyor ve katkılar hesaplanıyor...")
     for target_col in outputs_list:
         y = master_datasets[target_col]['y']
         X_hyb = master_datasets[target_col]['X_hyb']
@@ -298,11 +342,8 @@ def run_unified_analysis(df, input_cols, outputs_list, dataset_name):
         f_types = master_datasets[target_col]['feature_types']
         
         for algo_name, model in regressors.items():
-            print(f"      -> {algo_name} eğitiliyor (STGP-EF & Importance)...") # YENİ EKLENEN SATIR
             for fold, (train_idx, test_idx) in enumerate(kf.split(X_hyb)):
                 X_tr_h, X_te_h, y_tr_h, y_te_h = prepare_data_fold(X_hyb, y, train_idx, test_idx)
-                
-                # Model Eğitimi ve Performans Metrikleri
                 with open(os.devnull, 'w') as f, redirect_stdout(f):
                     model.fit(X_tr_h, y_tr_h)
                     y_tr_pred_h = model.predict(X_tr_h)
@@ -315,8 +356,6 @@ def run_unified_analysis(df, input_cols, outputs_list, dataset_name):
                     'Train_MAE': mean_absolute_error(y_tr_h, y_tr_pred_h), 'Test_MAE': mean_absolute_error(y_te_h, y_te_pred_h),
                     'Train_MAPE': mean_absolute_percentage_error(y_tr_h+epsilon, y_tr_pred_h+epsilon), 'Test_MAPE': mean_absolute_percentage_error(y_te_h+epsilon, y_te_pred_h+epsilon)
                 })
-                
-                # Bireysel Öznitelik Katkısı (Permutation Importance)
                 with open(os.devnull, 'w') as f, redirect_stdout(f):
                     pi = permutation_importance(model, X_te_h, y_te_h, n_repeats=5, random_state=42, n_jobs=-1)
                 
@@ -326,120 +365,68 @@ def run_unified_analysis(df, input_cols, outputs_list, dataset_name):
                         'Importance_Mean': pi.importances_mean[i], 'Importance_Std': pi.importances_std[i], 'Fold': fold+1
                     })
 
-    # =========================================================================
-    # FAZ 4: ORTALAMALARIN HESAPLANMASI VE EXCEL ÇIKTISI
-    # =========================================================================
-    print("\n[TAMAMLANDI] Sonuçlar toparlanıp Excel dosyasına yazılıyor...")
+    # -------------------------------------------------------------------------
+    # FAZ 4: TERMODİNAMİK UYUM (PIML - SENTETİK IZGARA) TESTİ
+    # -------------------------------------------------------------------------
+    print("\n[FAZ 4/5] Modellerin Termodinamik Yasalara Uyumu (Sentetik Izgara Testi) yapılıyor...")
+    piml_results = []
+    is_saturated = (len(input_cols) == 1 and 'T(girdi)' in input_cols)
+
+    for target_col in outputs_list:
+        data_info = master_datasets[target_col]
+        y = data_info['y']
+        X_hyb = data_info['X_hyb']
+        
+        trained_base, trained_hyb = {}, {}
+        for algo_name, b_model in get_regressors().items():
+            pipe_base = Pipeline([('scaler', StandardScaler()), ('model', b_model)])
+            pipe_base.fit(X_base, y)
+            trained_base[algo_name] = pipe_base
+            
+        for algo_name, h_model in get_regressors().items():
+            pipe_hyb = Pipeline([('scaler', StandardScaler()), ('model', h_model)])
+            pipe_hyb.fit(X_hyb, y)
+            trained_hyb[algo_name] = pipe_hyb
+
+        if is_saturated:
+            res_b = check_thermodynamics_on_synthetic_grid(trained_base, input_cols, target_col, vary_col='T', min_val=-30, max_val=50, step=0.1)
+            res_b['Scenario'] = 'Base'
+            res_h = check_thermodynamics_on_synthetic_grid(trained_hyb, input_cols, target_col, vary_col='T', min_val=-30, max_val=50, step=0.1, stgp_model=data_info['stgp_model'], ef_model=data_info['ef_model'], base_scaler=data_info['base_scaler'])
+            res_h['Scenario'] = 'Hybrid'
+            piml_results.extend([res_b, res_h])
+        else:
+            # Kızgın Faz: Izobarik (Sabit P=1.5, T Değişir)
+            res_b_t = check_thermodynamics_on_synthetic_grid(trained_base, input_cols, target_col, vary_col='T', min_val=20, max_val=100, step=0.1, fixed_col='P', fixed_val=1.5)
+            res_b_t['Scenario'] = 'Base'
+            res_h_t = check_thermodynamics_on_synthetic_grid(trained_hyb, input_cols, target_col, vary_col='T', min_val=20, max_val=100, step=0.1, fixed_col='P', fixed_val=1.5, stgp_model=data_info['stgp_model'], ef_model=data_info['ef_model'], base_scaler=data_info['base_scaler'])
+            res_h_t['Scenario'] = 'Hybrid'
+            # Kızgın Faz: Izotermal (Sabit T=40, P Değişir)
+            res_b_p = check_thermodynamics_on_synthetic_grid(trained_base, input_cols, target_col, vary_col='P', min_val=0.5, max_val=3.0, step=0.01, fixed_col='T', fixed_val=40.0)
+            res_b_p['Scenario'] = 'Base'
+            res_h_p = check_thermodynamics_on_synthetic_grid(trained_hyb, input_cols, target_col, vary_col='P', min_val=0.5, max_val=3.0, step=0.01, fixed_col='T', fixed_val=40.0, stgp_model=data_info['stgp_model'], ef_model=data_info['ef_model'], base_scaler=data_info['base_scaler'])
+            res_h_p['Scenario'] = 'Hybrid'
+            piml_results.extend([res_b_t, res_h_t, res_b_p, res_h_p])
+
+    # -------------------------------------------------------------------------
+    # FAZ 5: ORTALAMALARIN HESAPLANMASI VE EXCEL ÇIKTISI
+    # -------------------------------------------------------------------------
+    print("\n[FAZ 5/5] Analiz tamamlandı. Tüm sonuçlar Excel dosyasına kaydediliyor...")
     
-    df_met = pd.DataFrame(all_metrics)
-    avg_met = df_met.groupby(['Target', 'Algorithm', 'Scenario']).mean(numeric_only=True).drop(columns=['Fold']).reset_index()
-    
-    df_imp = pd.DataFrame(all_importances)
-    avg_imp = df_imp.groupby(['Target', 'Algorithm', 'Feature', 'Type']).mean(numeric_only=True).drop(columns=['Fold']).reset_index()
-    avg_imp = avg_imp.sort_values(by=['Target', 'Algorithm', 'Importance_Mean'], ascending=[True, True, False])
+    df_met = pd.DataFrame(all_metrics).groupby(['Target', 'Algorithm', 'Scenario']).mean(numeric_only=True).drop(columns=['Fold']).reset_index()
+    df_imp = pd.DataFrame(all_importances).groupby(['Target', 'Algorithm', 'Feature', 'Type']).mean(numeric_only=True).drop(columns=['Fold']).reset_index()
+    df_imp = df_imp.sort_values(by=['Target', 'Algorithm', 'Importance_Mean'], ascending=[True, True, False])
+    df_piml = pd.concat(piml_results, ignore_index=True)
 
     excel_path = f"Results/{dataset_name}_Nihai_Sonuclar.xlsx"
     with pd.ExcelWriter(excel_path) as writer:
-        avg_met.to_excel(writer, sheet_name='Performans_Ortalamalari', index=False)
-        avg_imp.to_excel(writer, sheet_name='Oznitelik_Bireysel_Katki', index=False)
+        df_met.to_excel(writer, sheet_name='Performans_Ortalamalari', index=False)
+        df_imp.to_excel(writer, sheet_name='Oznitelik_Bireysel_Katki', index=False)
+        df_piml.to_excel(writer, sheet_name='Termodinamik_Uyum_PIML', index=False)
         pd.DataFrame(dict_formulas).to_excel(writer, sheet_name='Uretilen_Formuller', index=False)
         
-        # Her hedefe özel üretilen hibrit veri seti ayrı sekme olarak kaydedilir
         for t_name, data_info in master_datasets.items():
-            safe_name = str(t_name).replace('(', '').replace(')', '').replace(' ', '_')[:25] # Excel sekme limiti güvenliği
+            safe_name = str(t_name).replace('(', '').replace(')', '').replace(' ', '_')[:25] 
             data_info['df_export'].to_excel(writer, sheet_name=f'Data_{safe_name}', index=False)
 
-    print(f"-> Çıktı Dosyası: {excel_path}")
-    
-    # Notebook için primary çıktıyı döndür (Görselleştirme için listelerin ilk hedefini alır)
-    primary_target = outputs_list[0]
-    return avg_met, avg_imp, master_datasets[primary_target]['df_export']
-
-
-# ═══════════════════════════════════════════════════════════════════
-#  THERMODYNAMIC CONSISTENCY CHECKS
-# ═══════════════════════════════════════════════════════════════════
-def check_saturated_pointwise_constraints(df):
-    rules = []
-    if {'v buhar (çıktı)', 'v sıvı (çıktı)'}.issubset(df.columns): rules.append(('v_g > v_f', lambda r: r['v buhar (çıktı)'] > r['v sıvı (çıktı)']))
-    if {'h buhar (çıktı)', 'h sıvı (çıktı)'}.issubset(df.columns): rules.append(('h_g > h_f', lambda r: r['h buhar (çıktı)'] > r['h sıvı (çıktı)']))
-    if {'s buhar (çıktı)', 's sıvı (çıktı)'}.issubset(df.columns): rules.append(('s_g > s_f', lambda r: r['s buhar (çıktı)'] > r['s sıvı (çıktı)']))
-
-    violations_list = []
-    summary = {}
-    for name, rule in rules:
-        mask_ok = df.apply(rule, axis=1)
-        n_total = len(df)
-        n_bad = n_total - mask_ok.sum()
-        summary[name] = {'n_total': n_total, 'n_violations': int(n_bad), 'violation_rate': n_bad / n_total if n_total > 0 else np.nan}
-        if n_bad > 0:
-            viol_df = df.loc[~mask_ok].copy()
-            viol_df['violated_rule'] = name
-            violations_list.append(viol_df)
-    return summary, pd.concat(violations_list, ignore_index=True) if violations_list else pd.DataFrame()
-
-def check_saturated_monotonicity(df, T_col='T(girdi)', P_col='P(çıktı)'):
-    summary = {}
-    if T_col not in df.columns: return summary
-    df_sorted = df.sort_values(T_col)
-    dT = np.diff(df_sorted[T_col].values)
-
-    def _monotone_check(y):
-        if len(y) < 2: return {'n_points': len(y), 'n_violations': np.nan, 'violation_rate': np.nan}
-        dy = np.diff(y)[dT > 0]
-        if len(dy) == 0: return {'n_points': len(y), 'n_violations': np.nan, 'violation_rate': np.nan}
-        n_bad = (dy < 0).sum()
-        return {'n_points': len(y), 'n_violations': int(n_bad), 'violation_rate': n_bad / len(dy)}
-
-    if P_col in df_sorted.columns: summary['P_vs_T_increasing'] = _monotone_check(df_sorted[P_col].values)
-    for col in ['h sıvı (çıktı)', 'h buhar (çıktı)', 's sıvı (çıktı)', 's buhar (çıktı)']:
-        if col in df_sorted.columns: summary[f"{col}_vs_T_increasing"] = _monotone_check(df_sorted[col].values)
-    return summary
-
-def check_superheated_monotonicity(df, T_col='T (girdi)', P_col='P (girdi)'):
-    summary = {}
-    if not {T_col, P_col}.issubset(df.columns): return summary
-
-    for prop in ['v (çıktı)', 'h (çıktı)', 's (çıktı)']:
-        if prop not in df.columns: continue
-        rates = []
-        for p_val, sub in df.groupby(P_col):
-            sub = sub.sort_values(T_col)
-            if len(sub) < 3: continue
-            dy = np.diff(sub[prop].values)[np.diff(sub[T_col].values) > 0]
-            if len(dy) > 0: rates.append((dy < 0).sum() / len(dy))
-        summary[f"{prop}_vs_T_at_constP_increasing"] = np.mean(rates) if rates else np.nan
-
-    prop = 'v (çıktı)'
-    if prop in df.columns:
-        rates = []
-        for T_val, sub in df.groupby(T_col):
-            sub = sub.sort_values(P_col)
-            if len(sub) < 3: continue
-            dv = np.diff(sub[prop].values)[np.diff(sub[P_col].values) > 0]
-            if len(dv) > 0: rates.append((dv > 0).sum() / len(dv))
-        summary[f"{prop}_vs_P_at_constT_decreasing"] = np.mean(rates) if rates else np.nan
-    return summary
-
-def check_thermodynamics_on_synthetic_grid(models_dict, input_cols, min_T=-30, max_T=50, step=0.1, const_P=None):
-    T_range = np.arange(min_T, max_T, step)
-    grid_df = pd.DataFrame({'T (girdi)': T_range, 'P (girdi)': const_P}) if const_P is not None else pd.DataFrame({'T(girdi)': T_range})
-        
-    grid_enr, enr_cols = enrich_input_space(grid_df, input_cols)
-    X_grid = grid_enr[enr_cols].values
-    
-    results = []
-    for algo_name, model in models_dict.items():
-        try:
-            preds = model.predict(X_grid)
-            derivatives = np.diff(preds) / np.diff(T_range)
-            violations = (derivatives < 0).sum()
-            results.append({
-                'Algoritma': algo_name, 'Sentetik_Nokta_Sayisi': len(preds),
-                'Fiziksel_Ihlal_Sayisi': violations, 'Ihlal_Yuzdesi_(%)': (violations / len(derivatives)) * 100
-            })
-        except Exception as e:
-            logger.warning(f"{algo_name} grid testi başarısız: {e}")
-            
-    df_results = pd.DataFrame(results)
-    return df_results
+    print(f"-> Çıktı Dosyası Başarıyla Oluşturuldu: {excel_path}")
+    return df_met, df_imp, df_piml

@@ -145,45 +145,78 @@ def format_math_expr(expr: str) -> str:
     except Exception:
         return expr.replace('"', '').split('|')[0].strip()
 
-def apply_stgp_ef_full(X, y, n_best_features=10):
-    stgp_forms, ef_forms = {}, {}
-    scaler = StandardScaler()
-    X_scaled = scaler.fit_transform(X)
-    
-    stgp_model, ef_model = None, None
-    
-    # STGP
-    X_stgp = np.empty((X_scaled.shape[0], 0))
+def _fit_stgp_transform(X_train, y_train, X_test, n_best_features=10):
+    """STGP'yi SADECE X_train/y_train ile fit eder; X_test aynı modelle transform edilir (test hedefi sızmaz)."""
+    stgp_forms = {}
+    stgp_model = None
+    X_train_out = np.empty((X_train.shape[0], 0))
+    X_test_out = np.empty((X_test.shape[0], 0))
     try:
         stgp_model = SymbolicTransformer(n_jobs=1, random_state=42)
         with open(os.devnull, 'w') as f, redirect_stdout(f):
-            stgp_model.fit(X_scaled, y)
-            X_stgp = np.nan_to_num(stgp_model.transform(X_scaled))
-            if hasattr(stgp_model, '_best_programs'):
-                for idx, prog in enumerate(stgp_model._best_programs[:n_best_features]):
-                    stgp_forms[f'STGP_{idx:02d}'] = format_math_expr(str(prog))
-    except Exception as e: pass
-    
-    n_stgp = min(n_best_features, X_stgp.shape[1])
-    X_stgp = X_stgp[:, :n_stgp] if n_stgp > 0 else X_stgp
+            stgp_model.fit(X_train, y_train)
+            X_train_out = np.nan_to_num(stgp_model.transform(X_train))
+            X_test_out = np.nan_to_num(stgp_model.transform(X_test))
+        if hasattr(stgp_model, '_best_programs'):
+            for idx, prog in enumerate(stgp_model._best_programs[:n_best_features]):
+                stgp_forms[f'STGP_{idx:02d}'] = format_math_expr(str(prog))
+    except Exception as e:
+        logger.warning(f"STGP fit/transform başarısız oldu, bu öznitelik grubu atlanıyor: {e}")
+        stgp_model = None
+        X_train_out = np.empty((X_train.shape[0], 0))
+        X_test_out = np.empty((X_test.shape[0], 0))
 
-    # EF
-    X_ef = np.empty((X_scaled.shape[0], 0))
+    n_sel = min(n_best_features, X_train_out.shape[1])
+    X_train_out = X_train_out[:, :n_sel] if n_sel > 0 else X_train_out
+    X_test_out = X_test_out[:, :n_sel] if n_sel > 0 else X_test_out
+    return X_train_out, X_test_out, stgp_forms, stgp_model
+
+
+def _fit_ef_transform(X_train, y_train, X_test, n_best_features=10):
+    """EF'yi SADECE X_train/y_train ile fit eder; X_test aynı modelle transform edilir (test hedefi sızmaz)."""
+    ef_forms = {}
+    ef_model = None
+    X_train_out = np.empty((X_train.shape[0], 0))
+    X_test_out = np.empty((X_test.shape[0], 0))
     try:
         ef_model = EvolutionaryForestRegressor(random_state=42, basic_primitives="default", verbose=False, n_process=1)
         with open(os.devnull, 'w') as f, redirect_stdout(f):
-            ef_model.fit(X_scaled, y)
-            X_ef = ef_model.transform(X_scaled)
-            hof = getattr(ef_model, '_best_hof', getattr(ef_model, 'hof', None))
-            if hof is not None:
-                for idx, prog in enumerate(hof[:n_best_features]):
-                    ef_forms[f'EF_{idx:02d}'] = format_math_expr(str(prog))
-    except Exception as e: pass
+            ef_model.fit(X_train, y_train)
+            X_train_out = ef_model.transform(X_train)
+            X_test_out = ef_model.transform(X_test)
+        hof = getattr(ef_model, '_best_hof', getattr(ef_model, 'hof', None))
+        if hof is not None:
+            for idx, prog in enumerate(hof[:n_best_features]):
+                ef_forms[f'EF_{idx:02d}'] = format_math_expr(str(prog))
+    except Exception as e:
+        logger.warning(f"EF fit/transform başarısız oldu, bu öznitelik grubu atlanıyor: {e}")
+        ef_model = None
+        X_train_out = np.empty((X_train.shape[0], 0))
+        X_test_out = np.empty((X_test.shape[0], 0))
 
-    n_ef = min(n_best_features, X_ef.shape[1])
-    X_ef = X_ef[:, :n_ef] if n_ef > 0 else X_ef
+    n_sel = min(n_best_features, X_train_out.shape[1])
+    X_train_out = X_train_out[:, :n_sel] if n_sel > 0 else X_train_out
+    X_test_out = X_test_out[:, :n_sel] if n_sel > 0 else X_test_out
+    return X_train_out, X_test_out, ef_forms, ef_model
 
-    X_constructed = np.hstack((X_stgp, X_ef)) if X_stgp.size and X_ef.size else np.empty((X.shape[0], 0))
+
+def _combine_hybrid_parts(*arrays):
+    """Boş olmayan dizileri birleştirir; STGP/EF'den biri başarısız olsa da diğeri korunur (önceden ikisi de silinirdi)."""
+    valid = [a for a in arrays if a.size]
+    n_rows = arrays[0].shape[0]
+    return np.hstack(valid) if valid else np.empty((n_rows, 0))
+
+
+def apply_stgp_ef_full(X, y, n_best_features=10):
+    """Tüm veri üzerinde STGP-EF fit eder; SADECE rapor/Excel çıktısı ve FAZ4 fizik testi içindir,
+    K-Fold performans metrikleri (FAZ3) bunu KULLANMAZ (aksi halde test hedefleri özniteliklere sızar)."""
+    scaler = StandardScaler()
+    X_scaled = scaler.fit_transform(X)
+
+    X_stgp, _, stgp_forms, stgp_model = _fit_stgp_transform(X_scaled, y, X_scaled, n_best_features)
+    X_ef, _, ef_forms, ef_model = _fit_ef_transform(X_scaled, y, X_scaled, n_best_features)
+
+    X_constructed = _combine_hybrid_parts(X_stgp, X_ef)
     X_hybrid = np.hstack((X, X_constructed)) if X_constructed.size else X
 
     return X_hybrid, stgp_forms, ef_forms, stgp_model, ef_model, scaler
@@ -213,10 +246,11 @@ def check_thermodynamics_on_synthetic_grid(models_dict, input_cols, target_name,
     grid_df = grid_df[input_cols] # Sütun sırasını eşitle
     
     grid_enr, enr_cols = enrich_input_space(grid_df, input_cols)
-    X_grid_base = grid_enr[enr_cols].values
     
     # STGP-EF modelleri verilmişse (Hybrid Senaryo), sentetik matrisi zenginleştir
     if stgp_model is not None or ef_model is not None:
+        # Hibrit modeller zenginleştirilmiş taban (X_enr) üzerine kurulduğu için ızgara da aynı tabanı kullanmalı
+        X_grid_base = grid_enr[enr_cols].values
         X_scaled = base_scaler.transform(X_grid_base) if base_scaler else X_grid_base
         X_stgp = np.empty((X_scaled.shape[0], 0))
         if stgp_model:
@@ -224,18 +258,22 @@ def check_thermodynamics_on_synthetic_grid(models_dict, input_cols, target_name,
                 X_stgp = np.nan_to_num(stgp_model.transform(X_scaled))
                 n_s = min(n_best, X_stgp.shape[1])
                 X_stgp = X_stgp[:, :n_s] if n_s > 0 else X_stgp
-            except: pass
+            except Exception as e:
+                logger.warning(f"Sentetik ızgarada STGP transform başarısız: {e}")
         X_ef = np.empty((X_scaled.shape[0], 0))
         if ef_model:
             try:
                 X_ef = ef_model.transform(X_scaled)
                 n_e = min(n_best, X_ef.shape[1])
                 X_ef = X_ef[:, :n_e] if n_e > 0 else X_ef
-            except: pass
-        X_const = np.hstack((X_stgp, X_ef)) if X_stgp.size and X_ef.size else np.empty((X_grid_base.shape[0], 0))
+            except Exception as e:
+                logger.warning(f"Sentetik ızgarada EF transform başarısız: {e}")
+        X_const = _combine_hybrid_parts(X_stgp, X_ef)
         X_grid_final = np.hstack((X_grid_base, X_const)) if X_const.size else X_grid_base
     else:
-        X_grid_final = X_grid_base # Base Senaryo
+        # Base modeller SADECE ham input_cols ile eğitildi (zenginleştirme yok); ızgara da ham olmalı,
+        # aksi halde saturated (T-tek-girdi) senaryosunda öznitelik sayısı uyuşmaz (StandardScaler hatası)
+        X_grid_final = grid_df[input_cols].values
 
     # FİZİKSEL KURAL MOTORU (Kızgın ve Doymuş Fazlara Dinamik Tepki Verir)
     is_decreasing = False
@@ -258,7 +296,8 @@ def check_thermodynamics_on_synthetic_grid(models_dict, input_cols, target_name,
                 'Target': target_name, 'Algoritma': algo_name, 'Test_Tipi': test_str,
                 'Fiziksel_Ihlal_Sayisi': violations, 'Ihlal_Yuzdesi_(%)': violation_rate
             })
-        except: pass
+        except Exception as e:
+            logger.warning(f"{algo_name} için sentetik ızgara testi başarısız: {e}")
     return pd.DataFrame(results)
 
 # ═══════════════════════════════════════════════════════════════════
@@ -290,6 +329,8 @@ def run_unified_analysis(df, input_cols, outputs_list, dataset_name):
     for target_col in outputs_list:
         print(f"  -> Hedef ({target_col}) için STGP-EF çalıştırılıyor...")
         y = df_enr[target_col].values.astype(np.float64)
+        # NOT: Bu tum-veri fit'i SADECE Excel raporu (formuller/veri seti) ve FAZ4 fizik testi icindir.
+        # FAZ3'teki K-Fold performans metrikleri bu X_hyb'i KULLANMAZ, kendi fold-bazli hibrit setini kurar.
         X_hyb, stgp_forms, ef_forms, stgp_model, ef_model, base_scaler = apply_stgp_ef_full(X_enr, y, n_best_features=10)
         
         n_base_hyb = len(enr_cols)
@@ -335,30 +376,53 @@ def run_unified_analysis(df, input_cols, outputs_list, dataset_name):
     # FAZ 3: STGP-EF SENARYO EĞİTİMLERİ VE ÖZNİTELİK KATKISI (TÜM HEDEFLER)
     # -------------------------------------------------------------------------
     print("\n[FAZ 3/5] STGP-EF (Hibrit) veri setleri ile modeller eğitiliyor ve katkılar hesaplanıyor...")
+    print("           (Veri sızıntısını önlemek için STGP-EF her fold'da SADECE o foldun eğitim verisiyle yeniden fit ediliyor)")
     for target_col in outputs_list:
         y = master_datasets[target_col]['y']
-        X_hyb = master_datasets[target_col]['X_hyb']
-        f_names = master_datasets[target_col]['feature_names']
-        f_types = master_datasets[target_col]['feature_types']
-        
-        for algo_name, model in regressors.items():
-            for fold, (train_idx, test_idx) in enumerate(kf.split(X_hyb)):
-                X_tr_h, X_te_h, y_tr_h, y_te_h = prepare_data_fold(X_hyb, y, train_idx, test_idx)
+
+        for fold, (train_idx, test_idx) in enumerate(kf.split(X_enr)):
+            X_tr_enr, X_te_enr = X_enr[train_idx], X_enr[test_idx]
+            y_tr, y_te = y[train_idx], y[test_idx]
+
+            # STGP-EF SADECE bu foldun egitim verisiyle fit edilir; test satirlarinin hedefi asla fit'e girmez
+            fold_scaler = StandardScaler()
+            X_tr_scaled = fold_scaler.fit_transform(X_tr_enr)
+            X_te_scaled = fold_scaler.transform(X_te_enr)
+
+            X_stgp_tr, X_stgp_te, stgp_forms_fold, _ = _fit_stgp_transform(X_tr_scaled, y_tr, X_te_scaled, n_best_features=10)
+            X_ef_tr, X_ef_te, ef_forms_fold, _ = _fit_ef_transform(X_tr_scaled, y_tr, X_te_scaled, n_best_features=10)
+
+            X_const_tr = _combine_hybrid_parts(X_stgp_tr, X_ef_tr)
+            X_const_te = _combine_hybrid_parts(X_stgp_te, X_ef_te)
+            X_hyb_tr_raw = np.hstack((X_tr_enr, X_const_tr)) if X_const_tr.size else X_tr_enr
+            X_hyb_te_raw = np.hstack((X_te_enr, X_const_te)) if X_const_te.size else X_te_enr
+
+            # Nihai regresor icin ayri bir olcekleyici (STGP-EF girdisi icin kullanilan fold_scaler'dan bagimsiz)
+            final_scaler = StandardScaler()
+            X_tr_h = final_scaler.fit_transform(X_hyb_tr_raw)
+            X_te_h = final_scaler.transform(X_hyb_te_raw)
+
+            n_hyb_feat = X_tr_h.shape[1] - len(enr_cols)
+            hyb_names = (list(stgp_forms_fold.keys()) + list(ef_forms_fold.keys()))[:n_hyb_feat]
+            f_names = enr_cols + hyb_names
+            f_types = ['Orijinal'] * len(enr_cols) + ['Hibrit'] * n_hyb_feat
+
+            for algo_name, model in regressors.items():
                 with open(os.devnull, 'w') as f, redirect_stdout(f):
-                    model.fit(X_tr_h, y_tr_h)
+                    model.fit(X_tr_h, y_tr)
                     y_tr_pred_h = model.predict(X_tr_h)
                     y_te_pred_h = model.predict(X_te_h)
-                
+
                 all_metrics.append({
                     'Target': target_col, 'Algorithm': algo_name, 'Scenario': 'Hybrid', 'Fold': fold+1,
-                    'Train_R2': r2_score(y_tr_h, y_tr_pred_h), 'Test_R2': r2_score(y_te_h, y_te_pred_h),
-                    'Train_RMSE': np.sqrt(mean_squared_error(y_tr_h, y_tr_pred_h)), 'Test_RMSE': np.sqrt(mean_squared_error(y_te_h, y_te_pred_h)),
-                    'Train_MAE': mean_absolute_error(y_tr_h, y_tr_pred_h), 'Test_MAE': mean_absolute_error(y_te_h, y_te_pred_h),
-                    'Train_MAPE': mean_absolute_percentage_error(y_tr_h+epsilon, y_tr_pred_h+epsilon), 'Test_MAPE': mean_absolute_percentage_error(y_te_h+epsilon, y_te_pred_h+epsilon)
+                    'Train_R2': r2_score(y_tr, y_tr_pred_h), 'Test_R2': r2_score(y_te, y_te_pred_h),
+                    'Train_RMSE': np.sqrt(mean_squared_error(y_tr, y_tr_pred_h)), 'Test_RMSE': np.sqrt(mean_squared_error(y_te, y_te_pred_h)),
+                    'Train_MAE': mean_absolute_error(y_tr, y_tr_pred_h), 'Test_MAE': mean_absolute_error(y_te, y_te_pred_h),
+                    'Train_MAPE': mean_absolute_percentage_error(y_tr+epsilon, y_tr_pred_h+epsilon), 'Test_MAPE': mean_absolute_percentage_error(y_te+epsilon, y_te_pred_h+epsilon)
                 })
                 with open(os.devnull, 'w') as f, redirect_stdout(f):
-                    pi = permutation_importance(model, X_te_h, y_te_h, n_repeats=5, random_state=42, n_jobs=-1)
-                
+                    pi = permutation_importance(model, X_te_h, y_te, n_repeats=5, random_state=42, n_jobs=-1)
+
                 for i, fname in enumerate(f_names):
                     all_importances.append({
                         'Target': target_col, 'Algorithm': algo_name, 'Feature': fname, 'Type': f_types[i],

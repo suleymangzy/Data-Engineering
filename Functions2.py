@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 import logging
 import re
-from contextlib import redirect_stdout
+from contextlib import contextmanager, redirect_stdout
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -17,6 +17,7 @@ from sklearn.ensemble import (
     ExtraTreesRegressor, RandomForestRegressor,
     AdaBoostRegressor, GradientBoostingRegressor
 )
+from sklearn.base import clone
 from sklearn.model_selection import KFold
 from sklearn.metrics import (
     r2_score, mean_squared_error, 
@@ -92,29 +93,9 @@ def get_regressors():
         'XGBoost':   xgb.XGBRegressor(random_state=42, verbosity=0),
     }
 
-# ═══════════════════════════════════════════════════════════════════
-#  DATA PREPARATION
-# ═══════════════════════════════════════════════════════════════════
-def enrich_input_space(df, input_cols):
-    df_enriched = df.copy()
-    new_cols = list(input_cols)
-    if 'T(girdi)' in input_cols and len(input_cols) == 1:
-        T_K = df_enriched['T(girdi)'] + 273.15 
-        df_enriched['1/T'] = 1.0 / T_K
-        df_enriched['ln(T)'] = np.log(T_K)
-        new_cols.extend(['1/T', 'ln(T)'])
-    return df_enriched, new_cols
-
-def prepare_data_fold(X, y, train_idx, test_idx):
-    X_train, X_test = X[train_idx], X[test_idx]
-    y_train, y_test = y[train_idx], y[test_idx]
-    scaler_x = StandardScaler()
-    X_train = scaler_x.fit_transform(X_train)
-    X_test = scaler_x.transform(X_test)
-    return X_train, X_test, y_train, y_test
 
 # ═══════════════════════════════════════════════════════════════════
-#  FEATURE CONSTRUCTION (STGP-EF)
+#  FORMULA FORMATTING
 # ═══════════════════════════════════════════════════════════════════
 def format_math_expr(expr: str) -> str:
     expr = str(expr).strip()
@@ -145,352 +126,347 @@ def format_math_expr(expr: str) -> str:
     except Exception:
         return expr.replace('"', '').split('|')[0].strip()
 
-def _fit_stgp_transform(X_train, y_train, X_test, n_best_features=10):
-    """STGP'yi SADECE X_train/y_train ile fit eder; X_test aynı modelle transform edilir (test hedefi sızmaz)."""
-    stgp_forms = {}
-    stgp_model = None
-    X_train_out = np.empty((X_train.shape[0], 0))
-    X_test_out = np.empty((X_test.shape[0], 0))
+
+# ═══════════════════════════════════════════════════════════════════
+#  SCENARIOS & DOMAIN KNOWLEDGE FEATURES
+# ═══════════════════════════════════════════════════════════════════
+# Ana senaryolar: yalnizca HAM girdilerden turetilen evrimsel ozniteliklerin katkisini olcer.
+SCENARIOS = ['Base', 'STGP', 'EF', 'HYBRID']
+# Ayri karsilastirma (SADECE doymus faz): ham girdi + 1/T + ln(T). Kazancin evrimsel
+# ozniteliklerden mi, yalnizca termodinamik donusumlerden mi geldigini ayirt etmek icindir.
+DOMAIN_SCENARIO = 'Domain_Knowledge'
+ALL_SCENARIOS = SCENARIOS + [DOMAIN_SCENARIO]
+DOMAIN_FEATURE_NAMES = ['1/T', 'ln(T)']
+KELVIN_OFFSET = 273.15
+
+
+def is_saturated_input(input_cols):
+    return len(input_cols) == 1 and input_cols[0] == 'T(girdi)'
+
+
+def scenarios_for(input_cols):
+    """Doymus fazda 5 senaryo (Alan Bilgisi dahil), kizgin fazda yalnizca 4 ana senaryo."""
+    return ALL_SCENARIOS if is_saturated_input(input_cols) else SCENARIOS
+
+
+def domain_knowledge_features(X_raw):
+    """Tek girdili (T, °C) doymus faz icin 1/T ve ln(T) (Kelvin) uretir."""
+    T_K = X_raw[:, 0] + KELVIN_OFFSET
+    return np.column_stack([1.0 / T_K, np.log(T_K)])
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  FEATURE CONSTRUCTION (STGP / EF) - FOLD BAZLI, SIZINTISIZ
+# ═══════════════════════════════════════════════════════════════════
+@contextmanager
+def _quiet():
+    with open(os.devnull, 'w') as f, redirect_stdout(f):
+        yield
+
+
+def _clean(arr):
+    return np.nan_to_num(np.asarray(arr, dtype=np.float64), nan=0.0, posinf=1e12, neginf=-1e12)
+
+
+def _fit_stgp(X_train, y_train, n_best_features=10):
+    """STGP'yi SADECE egitim verisiyle fit eder. Donus: (model, kullanilan_sutun_sayisi, formuller)."""
     try:
-        stgp_model = SymbolicTransformer(n_jobs=1, random_state=42)
-        with open(os.devnull, 'w') as f, redirect_stdout(f):
-            stgp_model.fit(X_train, y_train)
-            X_train_out = np.nan_to_num(stgp_model.transform(X_train))
-            X_test_out = np.nan_to_num(stgp_model.transform(X_test))
-        if hasattr(stgp_model, '_best_programs'):
-            for idx, prog in enumerate(stgp_model._best_programs[:n_best_features]):
-                stgp_forms[f'STGP_{idx:02d}'] = format_math_expr(str(prog))
+        model = SymbolicTransformer(n_jobs=1, random_state=42)
+        with _quiet():
+            model.fit(X_train, y_train)
+            X_out = _clean(model.transform(X_train))
+        n_cols = min(n_best_features, X_out.shape[1])
+        forms = {}
+        if hasattr(model, '_best_programs'):
+            for idx, prog in enumerate(model._best_programs[:n_cols]):
+                forms[f'STGP_{idx:02d}'] = format_math_expr(str(prog))
+        return model, n_cols, forms
     except Exception as e:
-        logger.warning(f"STGP fit/transform başarısız oldu, bu öznitelik grubu atlanıyor: {e}")
-        stgp_model = None
-        X_train_out = np.empty((X_train.shape[0], 0))
-        X_test_out = np.empty((X_test.shape[0], 0))
-
-    n_sel = min(n_best_features, X_train_out.shape[1])
-    X_train_out = X_train_out[:, :n_sel] if n_sel > 0 else X_train_out
-    X_test_out = X_test_out[:, :n_sel] if n_sel > 0 else X_test_out
-    return X_train_out, X_test_out, stgp_forms, stgp_model
+        logger.warning(f"STGP fit/transform basarisiz oldu, bu oznitelik grubu atlaniyor: {e}")
+        return None, 0, {}
 
 
-def _fit_ef_transform(X_train, y_train, X_test, n_best_features=10):
-    """EF'yi SADECE X_train/y_train ile fit eder; X_test aynı modelle transform edilir (test hedefi sızmaz)."""
-    ef_forms = {}
-    ef_model = None
-    X_train_out = np.empty((X_train.shape[0], 0))
-    X_test_out = np.empty((X_test.shape[0], 0))
+def _fit_ef(X_train, y_train, n_best_features=10):
+    """EF'yi SADECE egitim verisiyle fit eder. Donus: (model, kullanilan_sutun_sayisi, formuller)."""
     try:
-        ef_model = EvolutionaryForestRegressor(random_state=42, basic_primitives="default", verbose=False, n_process=1)
-        with open(os.devnull, 'w') as f, redirect_stdout(f):
-            ef_model.fit(X_train, y_train)
-            X_train_out = ef_model.transform(X_train)
-            X_test_out = ef_model.transform(X_test)
-        hof = getattr(ef_model, '_best_hof', getattr(ef_model, 'hof', None))
+        model = EvolutionaryForestRegressor(random_state=42, basic_primitives="default", verbose=False, n_process=1)
+        with _quiet():
+            model.fit(X_train, y_train)
+            X_out = _clean(model.transform(X_train))
+        n_cols = min(n_best_features, X_out.shape[1])
+        forms = {}
+        hof = getattr(model, '_best_hof', getattr(model, 'hof', None))
         if hof is not None:
-            for idx, prog in enumerate(hof[:n_best_features]):
-                ef_forms[f'EF_{idx:02d}'] = format_math_expr(str(prog))
+            for idx, prog in enumerate(hof[:n_cols]):
+                forms[f'EF_{idx:02d}'] = format_math_expr(str(prog))
+        return model, n_cols, forms
     except Exception as e:
-        logger.warning(f"EF fit/transform başarısız oldu, bu öznitelik grubu atlanıyor: {e}")
-        ef_model = None
-        X_train_out = np.empty((X_train.shape[0], 0))
-        X_test_out = np.empty((X_test.shape[0], 0))
-
-    n_sel = min(n_best_features, X_train_out.shape[1])
-    X_train_out = X_train_out[:, :n_sel] if n_sel > 0 else X_train_out
-    X_test_out = X_test_out[:, :n_sel] if n_sel > 0 else X_test_out
-    return X_train_out, X_test_out, ef_forms, ef_model
+        logger.warning(f"EF fit/transform basarisiz oldu, bu oznitelik grubu atlaniyor: {e}")
+        return None, 0, {}
 
 
-def _combine_hybrid_parts(*arrays):
-    """Boş olmayan dizileri birleştirir; STGP/EF'den biri başarısız olsa da diğeri korunur (önceden ikisi de silinirdi)."""
-    valid = [a for a in arrays if a.size]
-    n_rows = arrays[0].shape[0]
-    return np.hstack(valid) if valid else np.empty((n_rows, 0))
+def _transform_features(model, X_scaled, n_cols):
+    if model is None or n_cols == 0:
+        return np.empty((X_scaled.shape[0], 0))
+    with _quiet():
+        return _clean(model.transform(X_scaled))[:, :n_cols]
 
 
-def apply_stgp_ef_full(X, y, n_best_features=10):
-    """Tüm veri üzerinde STGP-EF fit eder; SADECE rapor/Excel çıktısı ve FAZ4 fizik testi içindir,
-    K-Fold performans metrikleri (FAZ3) bunu KULLANMAZ (aksi halde test hedefleri özniteliklere sızar)."""
-    scaler = StandardScaler()
-    X_scaled = scaler.fit_transform(X)
+class ScenarioFeatureBuilder:
+    """Bir katin egitim verisiyle fit edilir; ayni donusumu test setine ve sentetik izgaraya uygular.
+    STGP/EF hicbir zaman test hedefini gormez."""
 
-    X_stgp, _, stgp_forms, stgp_model = _fit_stgp_transform(X_scaled, y, X_scaled, n_best_features)
-    X_ef, _, ef_forms, ef_model = _fit_ef_transform(X_scaled, y, X_scaled, n_best_features)
+    def __init__(self, input_cols, n_best_features=10):
+        self.input_cols = list(input_cols)
+        self.n_best_features = n_best_features
+        self.scenarios = scenarios_for(self.input_cols)
 
-    X_constructed = _combine_hybrid_parts(X_stgp, X_ef)
-    X_hybrid = np.hstack((X, X_constructed)) if X_constructed.size else X
+    def fit(self, X_train, y_train):
+        self.scaler_ = StandardScaler().fit(X_train)
+        X_scaled = self.scaler_.transform(X_train)
+        self.stgp_model_, self.n_stgp_, self.stgp_forms_ = _fit_stgp(X_scaled, y_train, self.n_best_features)
+        self.ef_model_, self.n_ef_, self.ef_forms_ = _fit_ef(X_scaled, y_train, self.n_best_features)
+        return self
 
-    return X_hybrid, stgp_forms, ef_forms, stgp_model, ef_model, scaler
-
-# ═══════════════════════════════════════════════════════════════════
-#  THERMODYNAMIC GRID TEST (UNIVERSAL PIML)
-# ═══════════════════════════════════════════════════════════════════
-def check_thermodynamics_on_synthetic_grid(models_dict, input_cols, target_name, 
-                                           vary_col='T', min_val=-30, max_val=50, step=0.1, 
-                                           fixed_col=None, fixed_val=None,
-                                           stgp_model=None, ef_model=None, base_scaler=None, n_best=10):
-    
-    grid_vals = np.arange(min_val, max_val, step)
-    grid_data = {}
-    
-    t_col_name = 'T (girdi)' if 'T (girdi)' in input_cols else 'T(girdi)'
-    p_col_name = 'P (girdi)' if 'P (girdi)' in input_cols else None
-    
-    if vary_col == 'T':
-        grid_data[t_col_name] = grid_vals
-        if fixed_col == 'P' and p_col_name: grid_data[p_col_name] = fixed_val
-    elif vary_col == 'P':
-        grid_data[p_col_name] = grid_vals
-        if fixed_col == 'T' and t_col_name: grid_data[t_col_name] = fixed_val
-            
-    grid_df = pd.DataFrame(grid_data)
-    grid_df = grid_df[input_cols] # Sütun sırasını eşitle
-    
-    grid_enr, enr_cols = enrich_input_space(grid_df, input_cols)
-    
-    # STGP-EF modelleri verilmişse (Hybrid Senaryo), sentetik matrisi zenginleştir
-    if stgp_model is not None or ef_model is not None:
-        # Hibrit modeller zenginleştirilmiş taban (X_enr) üzerine kurulduğu için ızgara da aynı tabanı kullanmalı
-        X_grid_base = grid_enr[enr_cols].values
-        X_scaled = base_scaler.transform(X_grid_base) if base_scaler else X_grid_base
-        X_stgp = np.empty((X_scaled.shape[0], 0))
-        if stgp_model:
-            try:
-                X_stgp = np.nan_to_num(stgp_model.transform(X_scaled))
-                n_s = min(n_best, X_stgp.shape[1])
-                X_stgp = X_stgp[:, :n_s] if n_s > 0 else X_stgp
-            except Exception as e:
-                logger.warning(f"Sentetik ızgarada STGP transform başarısız: {e}")
-        X_ef = np.empty((X_scaled.shape[0], 0))
-        if ef_model:
-            try:
-                X_ef = ef_model.transform(X_scaled)
-                n_e = min(n_best, X_ef.shape[1])
-                X_ef = X_ef[:, :n_e] if n_e > 0 else X_ef
-            except Exception as e:
-                logger.warning(f"Sentetik ızgarada EF transform başarısız: {e}")
-        X_const = _combine_hybrid_parts(X_stgp, X_ef)
-        X_grid_final = np.hstack((X_grid_base, X_const)) if X_const.size else X_grid_base
-    else:
-        # Base modeller SADECE ham input_cols ile eğitildi (zenginleştirme yok); ızgara da ham olmalı,
-        # aksi halde saturated (T-tek-girdi) senaryosunda öznitelik sayısı uyuşmaz (StandardScaler hatası)
-        X_grid_final = grid_df[input_cols].values
-
-    # FİZİKSEL KURAL MOTORU (Kızgın ve Doymuş Fazlara Dinamik Tepki Verir)
-    is_decreasing = False
-    if vary_col == 'T' and target_name in ['v buhar (çıktı)', 's buhar (çıktı)']: is_decreasing = True
-    elif vary_col == 'P' and target_name in ['v (çıktı)', 's (çıktı)']: is_decreasing = True
-    
-    results = []
-    for algo_name, model in models_dict.items():
-        try:
-            preds = model.predict(X_grid_final)
-            derivatives = np.diff(preds) / np.diff(grid_vals)
-            
-            if is_decreasing: violations = (derivatives > 0).sum()
-            else: violations = (derivatives < 0).sum()
-                
-            violation_rate = (violations / len(derivatives)) * 100
-            test_str = f"Sabit {fixed_col}={fixed_val}, {vary_col} degisiyor" if fixed_col else f"{vary_col} degisiyor (Doymus)"
-            
-            results.append({
-                'Target': target_name, 'Algoritma': algo_name, 'Test_Tipi': test_str,
-                'Fiziksel_Ihlal_Sayisi': violations, 'Ihlal_Yuzdesi_(%)': violation_rate
-            })
-        except Exception as e:
-            logger.warning(f"{algo_name} için sentetik ızgara testi başarısız: {e}")
-    return pd.DataFrame(results)
-
-# ═══════════════════════════════════════════════════════════════════
-#  UNIFIED MASTER LOOP (FAZ 1 - 5)
-# ═══════════════════════════════════════════════════════════════════
-def run_unified_analysis(df, input_cols, outputs_list, dataset_name):
-    print(f"\n{'▓'*60}")
-    print(f"  {dataset_name.upper()} - KESİN SIRALI K-FOLD VE PIML ANALİZİ")
-    print(f"{'▓'*60}")
-    
-    os.makedirs("Results", exist_ok=True)
-    epsilon = 1e-10
-    kf = KFold(n_splits=5, shuffle=True, random_state=42)
-    regressors = get_regressors()
-    
-    master_datasets = {}
-    dict_formulas = []
-    all_metrics = []
-    all_importances = []
-    
-    # -------------------------------------------------------------------------
-    # FAZ 1: HEDEF BAZLI VERİ SETLERİNİN HAZIRLANMASI (STGP-EF)
-    # -------------------------------------------------------------------------
-    print("\n[FAZ 1/5] Her hedef değişken için ayrı ayrı hibrit veri setleri üretiliyor...")
-    df_enr, enr_cols = enrich_input_space(df, input_cols)
-    X_base = df[input_cols].values.astype(np.float64) 
-    X_enr = df_enr[enr_cols].values.astype(np.float64) 
-    
-    for target_col in outputs_list:
-        print(f"  -> Hedef ({target_col}) için STGP-EF çalıştırılıyor...")
-        y = df_enr[target_col].values.astype(np.float64)
-        # NOT: Bu tum-veri fit'i SADECE Excel raporu (formuller/veri seti) ve FAZ4 fizik testi icindir.
-        # FAZ3'teki K-Fold performans metrikleri bu X_hyb'i KULLANMAZ, kendi fold-bazli hibrit setini kurar.
-        X_hyb, stgp_forms, ef_forms, stgp_model, ef_model, base_scaler = apply_stgp_ef_full(X_enr, y, n_best_features=10)
-        
-        n_base_hyb = len(enr_cols)
-        n_hyb_feat = X_hyb.shape[1] - n_base_hyb
-        hyb_names = (list(stgp_forms.keys()) + list(ef_forms.keys()))[:n_hyb_feat]
-        feature_names = enr_cols + hyb_names
-        feature_types = ['Orijinal'] * n_base_hyb + ['Hibrit'] * n_hyb_feat
-        
-        df_hyb_dataset = pd.DataFrame(X_hyb, columns=feature_names)
-        df_hyb_dataset['Target'] = y
-        
-        master_datasets[target_col] = {
-            'y': y, 'X_hyb': X_hyb, 'feature_names': feature_names, 'feature_types': feature_types,
-            'df_export': df_hyb_dataset, 'stgp_model': stgp_model, 'ef_model': ef_model, 'base_scaler': base_scaler
+    def build_matrices(self, X_raw):
+        """Her senaryo icin (olceklenmemis) ozellik matrisini dondurur."""
+        X_scaled = self.scaler_.transform(X_raw)
+        X_stgp = _transform_features(self.stgp_model_, X_scaled, self.n_stgp_)
+        X_ef = _transform_features(self.ef_model_, X_scaled, self.n_ef_)
+        mats = {
+            'Base': X_raw,
+            'STGP': np.hstack([X_raw, X_stgp]),
+            'EF': np.hstack([X_raw, X_ef]),
+            'HYBRID': np.hstack([X_raw, X_stgp, X_ef]),
         }
-        
-        for k, v in stgp_forms.items(): dict_formulas.append({'Target': target_col, 'Oznitelik': k, 'Algoritma': 'STGP', 'Formul': v})
-        for k, v in ef_forms.items(): dict_formulas.append({'Target': target_col, 'Oznitelik': k, 'Algoritma': 'EF', 'Formul': v})
+        if DOMAIN_SCENARIO in self.scenarios:
+            mats[DOMAIN_SCENARIO] = np.hstack([X_raw, domain_knowledge_features(X_raw)])
+        return mats
 
-    # -------------------------------------------------------------------------
-    # FAZ 2: BASE SENARYO EĞİTİMLERİ (TÜM HEDEFLER)
-    # -------------------------------------------------------------------------
-    print("\n[FAZ 2/5] Orijinal (Base) veri setleri ile modeller K-Fold ile eğitiliyor...")
-    for target_col in outputs_list:
-        y = master_datasets[target_col]['y']
-        for algo_name, model in regressors.items():
-            for fold, (train_idx, test_idx) in enumerate(kf.split(X_base)):
-                X_tr, X_te, y_tr, y_te = prepare_data_fold(X_base, y, train_idx, test_idx)
-                with open(os.devnull, 'w') as f, redirect_stdout(f):
-                    model.fit(X_tr, y_tr)
-                    y_tr_pred = model.predict(X_tr)
-                    y_te_pred = model.predict(X_te)
-                
-                all_metrics.append({
-                    'Target': target_col, 'Algorithm': algo_name, 'Scenario': 'Base', 'Fold': fold+1,
-                    'Train_R2': r2_score(y_tr, y_tr_pred), 'Test_R2': r2_score(y_te, y_te_pred),
-                    'Train_RMSE': np.sqrt(mean_squared_error(y_tr, y_tr_pred)), 'Test_RMSE': np.sqrt(mean_squared_error(y_te, y_te_pred)),
-                    'Train_MAE': mean_absolute_error(y_tr, y_tr_pred), 'Test_MAE': mean_absolute_error(y_te, y_te_pred),
-                    'Train_MAPE': mean_absolute_percentage_error(y_tr+epsilon, y_tr_pred+epsilon), 'Test_MAPE': mean_absolute_percentage_error(y_te+epsilon, y_te_pred+epsilon)
+    def feature_info(self, scenario):
+        names = list(self.input_cols)
+        types = ['Orijinal'] * len(names)
+        if scenario in ('STGP', 'HYBRID'):
+            names += [f'STGP_{i:02d}' for i in range(self.n_stgp_)]
+            types += ['STGP'] * self.n_stgp_
+        if scenario in ('EF', 'HYBRID'):
+            names += [f'EF_{i:02d}' for i in range(self.n_ef_)]
+            types += ['EF'] * self.n_ef_
+        if scenario == DOMAIN_SCENARIO:
+            names += DOMAIN_FEATURE_NAMES
+            types += ['Alan_Bilgisi'] * len(DOMAIN_FEATURE_NAMES)
+        return names, types
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  THERMODYNAMIC CONSISTENCY (MONOTONICITY) TEST ON SYNTHETIC GRID
+# ═══════════════════════════════════════════════════════════════════
+def build_synthetic_grid(input_cols, vary_col='T', min_val=-30, max_val=50, step=0.1,
+                         fixed_col=None, fixed_val=None):
+    """Ham girdi sutunlarindan olusan sentetik izgara dondurur: (grid_vals, X_grid_raw)."""
+    grid_vals = np.arange(min_val, max_val, step)
+    t_col = 'T (girdi)' if 'T (girdi)' in input_cols else 'T(girdi)'
+    p_col = 'P (girdi)' if 'P (girdi)' in input_cols else None
+
+    grid_data = {}
+    if vary_col == 'T':
+        grid_data[t_col] = grid_vals
+        if fixed_col == 'P' and p_col: grid_data[p_col] = fixed_val
+    elif vary_col == 'P':
+        grid_data[p_col] = grid_vals
+        if fixed_col == 'T': grid_data[t_col] = fixed_val
+
+    grid_df = pd.DataFrame(grid_data)[list(input_cols)]
+    return grid_vals, grid_df.values.astype(np.float64)
+
+
+def get_grid_specs(input_cols):
+    if len(input_cols) == 1 and 'T(girdi)' in input_cols:
+        return [dict(vary_col='T', min_val=-30, max_val=50, step=0.1)]
+    return [
+        dict(vary_col='T', min_val=20, max_val=100, step=0.1, fixed_col='P', fixed_val=1.5),   # izobarik
+        dict(vary_col='P', min_val=0.5, max_val=3.0, step=0.01, fixed_col='T', fixed_val=40.0),  # izotermal
+    ]
+
+
+def is_decreasing_expected(vary_col, target_name):
+    if vary_col == 'T' and target_name in ['v buhar (çıktı)', 's buhar (çıktı)']: return True
+    if vary_col == 'P' and target_name in ['v (çıktı)', 's (çıktı)']: return True
+    return False
+
+
+def evaluate_grid_violations(fitted_pipes, builder, input_cols, target_name, fold):
+    """Fold modelleriyle sentetik izgarada monotonluk ihlallerini sayar (senaryo x algoritma)."""
+    rows = []
+    for spec in get_grid_specs(input_cols):
+        grid_vals, X_grid_raw = build_synthetic_grid(input_cols, **spec)
+        matrices = builder.build_matrices(X_grid_raw)
+        decreasing = is_decreasing_expected(spec['vary_col'], target_name)
+        fixed_col, fixed_val = spec.get('fixed_col'), spec.get('fixed_val')
+        test_str = (f"Sabit {fixed_col}={fixed_val}, {spec['vary_col']} degisiyor" if fixed_col
+                    else f"{spec['vary_col']} degisiyor (Doymus)")
+
+        for (scenario, algo_name), pipe in fitted_pipes.items():
+            try:
+                preds = pipe.predict(matrices[scenario])
+                derivatives = np.diff(preds) / np.diff(grid_vals)
+                violations = int((derivatives > 0).sum() if decreasing else (derivatives < 0).sum())
+                rows.append({
+                    'Target': target_name, 'Algoritma': algo_name, 'Scenario': scenario, 'Fold': fold,
+                    'Test_Tipi': test_str, 'Fiziksel_Ihlal_Sayisi': violations,
+                    'Ihlal_Yuzdesi_(%)': violations / len(derivatives) * 100,
                 })
+            except Exception as e:
+                logger.warning(f"{algo_name}/{scenario} icin sentetik izgara testi basarisiz: {e}")
+    return rows
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  SUMMARY TABLES
+# ═══════════════════════════════════════════════════════════════════
+def _order_scenarios(df):
+    df = df.copy()
+    df['Scenario'] = pd.Categorical(df['Scenario'], categories=ALL_SCENARIOS, ordered=True)
+    return df
+
+
+def summarize_scenarios(df_met, df_uyum):
+    """Senaryo bazinda ortalama Test R2, Test MAPE ve monotonluk ihlal yuzdesi (RMSE hedefler arasi birim farki nedeniyle yok)."""
+    m = df_met.groupby('Scenario', observed=True)[['Test_R2', 'Test_MAPE']].mean()
+    v = df_uyum.groupby('Scenario', observed=True)['Ihlal_Yuzdesi_(%)'].mean().rename('Ort_Ihlal_Yuzdesi_(%)')
+    return m.join(v)
+
+
+def build_domain_knowledge_comparison(df_met, df_uyum):
+    """Mevcut senaryolari (doymus fazda Domain_Knowledge dahil) hedef x algoritma bazinda yan yana koyar."""
+    met = df_met.pivot_table(index=['Target', 'Algorithm'], columns='Scenario',
+                             values=['Test_R2', 'Test_RMSE'], observed=True)
+    met.columns = [f'{metric}_{scen}' for metric, scen in met.columns]
+
+    viol = (df_uyum.groupby(['Target', 'Algoritma', 'Scenario'], observed=True)['Ihlal_Yuzdesi_(%)']
+            .mean().unstack('Scenario'))
+    viol.columns = [f'Ihlal_{scen}' for scen in viol.columns]
+    viol.index.names = ['Target', 'Algorithm']
+
+    cmp = met.join(viol).reset_index()
+    ordered = ['Target', 'Algorithm'] + [f'{p}_{s}' for p in ('Test_R2', 'Test_RMSE', 'Ihlal') for s in ALL_SCENARIOS]
+    cmp = cmp[[c for c in ordered if c in cmp.columns]]
+
+    pairs = [(DOMAIN_SCENARIO, 'Base'), ('STGP', 'Base'), ('EF', 'Base'), ('HYBRID', 'Base'), ('HYBRID', DOMAIN_SCENARIO)]
+    for a, b in pairs:
+        if f'Test_R2_{a}' in cmp and f'Test_R2_{b}' in cmp:
+            cmp[f'Delta_R2_{a}_vs_{b}'] = cmp[f'Test_R2_{a}'] - cmp[f'Test_R2_{b}']
+        if f'Ihlal_{a}' in cmp and f'Ihlal_{b}' in cmp:
+            cmp[f'Delta_Ihlal_{a}_vs_{b}'] = cmp[f'Ihlal_{a}'] - cmp[f'Ihlal_{b}']
+    return cmp
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  UNIFIED MASTER LOOP
+# ═══════════════════════════════════════════════════════════════════
+def run_unified_analysis(df, input_cols, outputs_list, dataset_name,
+                         n_splits=5, n_best_features=10, algorithms=None, output_dir="Results"):
+    """Tum analiz TEK bir K-Fold dongusunde yapilir. STGP, EF, olceklendiriciler ve regresorler her katta
+    YALNIZCA o katin egitim verisiyle fit edilir; test verisi ve sentetik izgara sadece transform/predict gorur.
+
+    Senaryolar: Base, STGP, EF, HYBRID. Doymus fazda ayrica Domain_Knowledge (1/T, ln(T)) karsilastirmasi yapilir.
+    """
+    print(f"\n{'▓'*60}")
+    print(f"  {dataset_name.upper()} - SIZINTISIZ K-FOLD VE TERMODİNAMİK UYUM ANALİZİ")
+    print(f"{'▓'*60}")
+
+    os.makedirs(output_dir, exist_ok=True)
+    epsilon = 1e-10
+    kf = KFold(n_splits=n_splits, shuffle=True, random_state=42)
+    regressors = get_regressors()
+    if algorithms is not None:
+        regressors = {k: v for k, v in regressors.items() if k in algorithms}
+
+    X_raw = df[input_cols].values.astype(np.float64)
+    all_metrics, all_importances, all_uyum, all_formulas = [], [], [], []
 
     # -------------------------------------------------------------------------
-    # FAZ 3: STGP-EF SENARYO EĞİTİMLERİ VE ÖZNİTELİK KATKISI (TÜM HEDEFLER)
+    # FAZ 1: FOLD DONGUSU (oznitelik uretimi + 5 senaryo egitimi + importance + monotonluk)
     # -------------------------------------------------------------------------
-    print("\n[FAZ 3/5] STGP-EF (Hibrit) veri setleri ile modeller eğitiliyor ve katkılar hesaplanıyor...")
-    print("           (Veri sızıntısını önlemek için STGP-EF her fold'da SADECE o foldun eğitim verisiyle yeniden fit ediliyor)")
+    print("\n[FAZ 1/3] K-Fold dongusu: STGP-EF her katta yalnizca egitim verisiyle fit ediliyor...")
     for target_col in outputs_list:
-        y = master_datasets[target_col]['y']
+        print(f"  -> Hedef: {target_col}")
+        y = df[target_col].values.astype(np.float64)
 
-        for fold, (train_idx, test_idx) in enumerate(kf.split(X_enr)):
-            X_tr_enr, X_te_enr = X_enr[train_idx], X_enr[test_idx]
-            y_tr, y_te = y[train_idx], y[test_idx]
+        for fold, (train_idx, test_idx) in enumerate(kf.split(X_raw), start=1):
+            X_tr, X_te, y_tr, y_te = X_raw[train_idx], X_raw[test_idx], y[train_idx], y[test_idx]
 
-            # STGP-EF SADECE bu foldun egitim verisiyle fit edilir; test satirlarinin hedefi asla fit'e girmez
-            fold_scaler = StandardScaler()
-            X_tr_scaled = fold_scaler.fit_transform(X_tr_enr)
-            X_te_scaled = fold_scaler.transform(X_te_enr)
+            builder = ScenarioFeatureBuilder(input_cols, n_best_features).fit(X_tr, y_tr)
+            mats_tr, mats_te = builder.build_matrices(X_tr), builder.build_matrices(X_te)
 
-            X_stgp_tr, X_stgp_te, stgp_forms_fold, _ = _fit_stgp_transform(X_tr_scaled, y_tr, X_te_scaled, n_best_features=10)
-            X_ef_tr, X_ef_te, ef_forms_fold, _ = _fit_ef_transform(X_tr_scaled, y_tr, X_te_scaled, n_best_features=10)
+            for key, form in {**builder.stgp_forms_, **builder.ef_forms_}.items():
+                all_formulas.append({'Target': target_col, 'Fold': fold, 'Oznitelik': key,
+                                     'Algoritma': 'STGP' if key.startswith('STGP') else 'EF', 'Formul': form})
 
-            X_const_tr = _combine_hybrid_parts(X_stgp_tr, X_ef_tr)
-            X_const_te = _combine_hybrid_parts(X_stgp_te, X_ef_te)
-            X_hyb_tr_raw = np.hstack((X_tr_enr, X_const_tr)) if X_const_tr.size else X_tr_enr
-            X_hyb_te_raw = np.hstack((X_te_enr, X_const_te)) if X_const_te.size else X_te_enr
+            fitted_pipes = {}
+            for scenario in builder.scenarios:
+                f_names, f_types = builder.feature_info(scenario)
+                for algo_name, template in regressors.items():
+                    pipe = Pipeline([('scaler', StandardScaler()), ('model', clone(template))])
+                    with _quiet():
+                        pipe.fit(mats_tr[scenario], y_tr)
+                        y_tr_pred = pipe.predict(mats_tr[scenario])
+                        y_te_pred = pipe.predict(mats_te[scenario])
+                    fitted_pipes[(scenario, algo_name)] = pipe
 
-            # Nihai regresor icin ayri bir olcekleyici (STGP-EF girdisi icin kullanilan fold_scaler'dan bagimsiz)
-            final_scaler = StandardScaler()
-            X_tr_h = final_scaler.fit_transform(X_hyb_tr_raw)
-            X_te_h = final_scaler.transform(X_hyb_te_raw)
-
-            n_hyb_feat = X_tr_h.shape[1] - len(enr_cols)
-            hyb_names = (list(stgp_forms_fold.keys()) + list(ef_forms_fold.keys()))[:n_hyb_feat]
-            f_names = enr_cols + hyb_names
-            f_types = ['Orijinal'] * len(enr_cols) + ['Hibrit'] * n_hyb_feat
-
-            for algo_name, model in regressors.items():
-                with open(os.devnull, 'w') as f, redirect_stdout(f):
-                    model.fit(X_tr_h, y_tr)
-                    y_tr_pred_h = model.predict(X_tr_h)
-                    y_te_pred_h = model.predict(X_te_h)
-
-                all_metrics.append({
-                    'Target': target_col, 'Algorithm': algo_name, 'Scenario': 'Hybrid', 'Fold': fold+1,
-                    'Train_R2': r2_score(y_tr, y_tr_pred_h), 'Test_R2': r2_score(y_te, y_te_pred_h),
-                    'Train_RMSE': np.sqrt(mean_squared_error(y_tr, y_tr_pred_h)), 'Test_RMSE': np.sqrt(mean_squared_error(y_te, y_te_pred_h)),
-                    'Train_MAE': mean_absolute_error(y_tr, y_tr_pred_h), 'Test_MAE': mean_absolute_error(y_te, y_te_pred_h),
-                    'Train_MAPE': mean_absolute_percentage_error(y_tr+epsilon, y_tr_pred_h+epsilon), 'Test_MAPE': mean_absolute_percentage_error(y_te+epsilon, y_te_pred_h+epsilon)
-                })
-                with open(os.devnull, 'w') as f, redirect_stdout(f):
-                    pi = permutation_importance(model, X_te_h, y_te, n_repeats=5, random_state=42, n_jobs=-1)
-
-                for i, fname in enumerate(f_names):
-                    all_importances.append({
-                        'Target': target_col, 'Algorithm': algo_name, 'Feature': fname, 'Type': f_types[i],
-                        'Importance_Mean': pi.importances_mean[i], 'Importance_Std': pi.importances_std[i], 'Fold': fold+1
+                    all_metrics.append({
+                        'Target': target_col, 'Algorithm': algo_name, 'Scenario': scenario, 'Fold': fold,
+                        'Train_R2': r2_score(y_tr, y_tr_pred), 'Test_R2': r2_score(y_te, y_te_pred),
+                        'Train_RMSE': np.sqrt(mean_squared_error(y_tr, y_tr_pred)), 'Test_RMSE': np.sqrt(mean_squared_error(y_te, y_te_pred)),
+                        'Train_MAE': mean_absolute_error(y_tr, y_tr_pred), 'Test_MAE': mean_absolute_error(y_te, y_te_pred),
+                        'Train_MAPE': mean_absolute_percentage_error(y_tr + epsilon, y_tr_pred + epsilon),
+                        'Test_MAPE': mean_absolute_percentage_error(y_te + epsilon, y_te_pred + epsilon),
                     })
 
-    # -------------------------------------------------------------------------
-    # FAZ 4: TERMODİNAMİK UYUM (PIML - SENTETİK IZGARA) TESTİ
-    # -------------------------------------------------------------------------
-    print("\n[FAZ 4/5] Modellerin Termodinamik Yasalara Uyumu (Sentetik Izgara Testi) yapılıyor...")
-    piml_results = []
-    is_saturated = (len(input_cols) == 1 and 'T(girdi)' in input_cols)
+                    if scenario != 'Base':
+                        with _quiet():
+                            pi = permutation_importance(pipe, mats_te[scenario], y_te, n_repeats=5, random_state=42, n_jobs=-1)
+                        for i, fname in enumerate(f_names):
+                            all_importances.append({
+                                'Target': target_col, 'Scenario': scenario, 'Algorithm': algo_name, 'Feature': fname,
+                                'Type': f_types[i], 'Importance_Mean': pi.importances_mean[i],
+                                'Importance_Std': pi.importances_std[i], 'Fold': fold,
+                            })
 
-    for target_col in outputs_list:
-        data_info = master_datasets[target_col]
-        y = data_info['y']
-        X_hyb = data_info['X_hyb']
-        
-        trained_base, trained_hyb = {}, {}
-        for algo_name, b_model in get_regressors().items():
-            pipe_base = Pipeline([('scaler', StandardScaler()), ('model', b_model)])
-            pipe_base.fit(X_base, y)
-            trained_base[algo_name] = pipe_base
-            
-        for algo_name, h_model in get_regressors().items():
-            pipe_hyb = Pipeline([('scaler', StandardScaler()), ('model', h_model)])
-            pipe_hyb.fit(X_hyb, y)
-            trained_hyb[algo_name] = pipe_hyb
-
-        if is_saturated:
-            res_b = check_thermodynamics_on_synthetic_grid(trained_base, input_cols, target_col, vary_col='T', min_val=-30, max_val=50, step=0.1)
-            res_b['Scenario'] = 'Base'
-            res_h = check_thermodynamics_on_synthetic_grid(trained_hyb, input_cols, target_col, vary_col='T', min_val=-30, max_val=50, step=0.1, stgp_model=data_info['stgp_model'], ef_model=data_info['ef_model'], base_scaler=data_info['base_scaler'])
-            res_h['Scenario'] = 'Hybrid'
-            piml_results.extend([res_b, res_h])
-        else:
-            # Kızgın Faz: Izobarik (Sabit P=1.5, T Değişir)
-            res_b_t = check_thermodynamics_on_synthetic_grid(trained_base, input_cols, target_col, vary_col='T', min_val=20, max_val=100, step=0.1, fixed_col='P', fixed_val=1.5)
-            res_b_t['Scenario'] = 'Base'
-            res_h_t = check_thermodynamics_on_synthetic_grid(trained_hyb, input_cols, target_col, vary_col='T', min_val=20, max_val=100, step=0.1, fixed_col='P', fixed_val=1.5, stgp_model=data_info['stgp_model'], ef_model=data_info['ef_model'], base_scaler=data_info['base_scaler'])
-            res_h_t['Scenario'] = 'Hybrid'
-            # Kızgın Faz: Izotermal (Sabit T=40, P Değişir)
-            res_b_p = check_thermodynamics_on_synthetic_grid(trained_base, input_cols, target_col, vary_col='P', min_val=0.5, max_val=3.0, step=0.01, fixed_col='T', fixed_val=40.0)
-            res_b_p['Scenario'] = 'Base'
-            res_h_p = check_thermodynamics_on_synthetic_grid(trained_hyb, input_cols, target_col, vary_col='P', min_val=0.5, max_val=3.0, step=0.01, fixed_col='T', fixed_val=40.0, stgp_model=data_info['stgp_model'], ef_model=data_info['ef_model'], base_scaler=data_info['base_scaler'])
-            res_h_p['Scenario'] = 'Hybrid'
-            piml_results.extend([res_b_t, res_h_t, res_b_p, res_h_p])
+            all_uyum.extend(evaluate_grid_violations(fitted_pipes, builder, input_cols, target_col, fold))
 
     # -------------------------------------------------------------------------
-    # FAZ 5: ORTALAMALARIN HESAPLANMASI VE EXCEL ÇIKTISI
+    # FAZ 2: FOLD SONUCLARININ ORTALANMASI
     # -------------------------------------------------------------------------
-    print("\n[FAZ 5/5] Analiz tamamlandı. Tüm sonuçlar Excel dosyasına kaydediliyor...")
-    
-    df_met = pd.DataFrame(all_metrics).groupby(['Target', 'Algorithm', 'Scenario']).mean(numeric_only=True).drop(columns=['Fold']).reset_index()
-    df_imp = pd.DataFrame(all_importances).groupby(['Target', 'Algorithm', 'Feature', 'Type']).mean(numeric_only=True).drop(columns=['Fold']).reset_index()
-    df_imp = df_imp.sort_values(by=['Target', 'Algorithm', 'Importance_Mean'], ascending=[True, True, False])
-    df_piml = pd.concat(piml_results, ignore_index=True)
+    print("\n[FAZ 2/3] Fold sonuclari ortalaniyor...")
+    sort_cols = ['Target', 'Algorithm', 'Scenario']
+    df_met = (pd.DataFrame(all_metrics).groupby(sort_cols).mean(numeric_only=True)
+              .drop(columns=['Fold']).reset_index())
+    df_met = _order_scenarios(df_met).sort_values(sort_cols).reset_index(drop=True)
 
-    excel_path = f"Results/{dataset_name}_Nihai_Sonuclar.xlsx"
+    df_imp = (pd.DataFrame(all_importances).groupby(['Target', 'Scenario', 'Algorithm', 'Feature', 'Type'])
+              .mean(numeric_only=True).drop(columns=['Fold']).reset_index())
+    df_imp = _order_scenarios(df_imp).sort_values(
+        by=['Target', 'Scenario', 'Algorithm', 'Importance_Mean'], ascending=[True, True, True, False]).reset_index(drop=True)
+
+    df_uyum = (pd.DataFrame(all_uyum).groupby(['Target', 'Algoritma', 'Scenario', 'Test_Tipi'])
+               .mean(numeric_only=True).drop(columns=['Fold']).reset_index())
+    df_uyum = _order_scenarios(df_uyum).sort_values(['Target', 'Algoritma', 'Scenario', 'Test_Tipi']).reset_index(drop=True)
+
+    df_domain = build_domain_knowledge_comparison(df_met, df_uyum)
+
+    # -------------------------------------------------------------------------
+    # FAZ 3: EXCEL CIKTISI
+    # -------------------------------------------------------------------------
+    print("\n[FAZ 3/3] Tum sonuclar Excel dosyasina kaydediliyor...")
+    excel_path = os.path.join(output_dir, f"{dataset_name}_Nihai_Sonuclar.xlsx")
     with pd.ExcelWriter(excel_path) as writer:
         df_met.to_excel(writer, sheet_name='Performans_Ortalamalari', index=False)
         df_imp.to_excel(writer, sheet_name='Oznitelik_Bireysel_Katki', index=False)
-        df_piml.to_excel(writer, sheet_name='Termodinamik_Uyum_PIML', index=False)
-        pd.DataFrame(dict_formulas).to_excel(writer, sheet_name='Uretilen_Formuller', index=False)
-        
-        for t_name, data_info in master_datasets.items():
-            safe_name = str(t_name).replace('(', '').replace(')', '').replace(' ', '_')[:25] 
-            data_info['df_export'].to_excel(writer, sheet_name=f'Data_{safe_name}', index=False)
+        df_uyum.to_excel(writer, sheet_name='Termodinamik_Uyum', index=False)
+        if DOMAIN_SCENARIO in df_met['Scenario'].astype(str).unique():
+            df_domain.to_excel(writer, sheet_name='Alan_Bilgisi_Karsilastirma', index=False)
+        pd.DataFrame(all_formulas).to_excel(writer, sheet_name='Uretilen_Formuller', index=False)
 
     print(f"-> Çıktı Dosyası Başarıyla Oluşturuldu: {excel_path}")
-    return df_met, df_imp, df_piml
+    return df_met, df_imp, df_uyum

@@ -130,12 +130,13 @@ def format_math_expr(expr: str) -> str:
 # ═══════════════════════════════════════════════════════════════════
 #  SCENARIOS & DOMAIN KNOWLEDGE FEATURES
 # ═══════════════════════════════════════════════════════════════════
-# Ana senaryolar: yalnizca HAM girdilerden turetilen evrimsel ozniteliklerin katkisini olcer.
+# Durum 1 (tum fazlar): Base + {STGP, EF, HYBRID}; evrimsel oznitelikler HAM girdilerden uretilir.
 SCENARIOS = ['Base', 'STGP', 'EF', 'HYBRID']
-# Ayri karsilastirma (SADECE doymus faz): ham girdi + 1/T + ln(T). Kazancin evrimsel
-# ozniteliklerden mi, yalnizca termodinamik donusumlerden mi geldigini ayirt etmek icindir.
+# Durum 2 (SADECE doymus faz): alan bilgisi uzayi = ham girdi + 1/T + ln(T). Domain_Knowledge bu uzayin
+# referansidir; DK_STGP / DK_EF / DK_HYBRID ozniteliklerini bu GENISLETILMIS uzaydan uretir.
 DOMAIN_SCENARIO = 'Domain_Knowledge'
-ALL_SCENARIOS = SCENARIOS + [DOMAIN_SCENARIO]
+DOMAIN_SCENARIOS = [DOMAIN_SCENARIO, 'DK_STGP', 'DK_EF', 'DK_HYBRID']
+ALL_SCENARIOS = SCENARIOS + DOMAIN_SCENARIOS
 DOMAIN_FEATURE_NAMES = ['1/T', 'ln(T)']
 KELVIN_OFFSET = 273.15
 
@@ -145,7 +146,7 @@ def is_saturated_input(input_cols):
 
 
 def scenarios_for(input_cols):
-    """Doymus fazda 5 senaryo (Alan Bilgisi dahil), kizgin fazda yalnizca 4 ana senaryo."""
+    """Doymus fazda 8 senaryo (Base grubu + Alan Bilgisi grubu), kizgin fazda yalnizca 4 ana senaryo."""
     return ALL_SCENARIOS if is_saturated_input(input_cols) else SCENARIOS
 
 
@@ -221,40 +222,77 @@ class ScenarioFeatureBuilder:
         self.n_best_features = n_best_features
         self.scenarios = scenarios_for(self.input_cols)
 
+    @property
+    def has_domain_(self):
+        return DOMAIN_SCENARIO in self.scenarios
+
+    @staticmethod
+    def _domain_space(X_raw):
+        return np.hstack([X_raw, domain_knowledge_features(X_raw)])
+
+    def _fit_space(self, X_space, y_train):
+        """Verilen girdi uzayi icin (olcekleyici, STGP, EF) uclusunu yalnizca egitim verisiyle fit eder."""
+        scaler = StandardScaler().fit(X_space)
+        X_scaled = scaler.transform(X_space)
+        stgp_model, n_stgp, stgp_forms = _fit_stgp(X_scaled, y_train, self.n_best_features)
+        ef_model, n_ef, ef_forms = _fit_ef(X_scaled, y_train, self.n_best_features)
+        return dict(scaler=scaler, stgp_model=stgp_model, n_stgp=n_stgp, stgp_forms=stgp_forms,
+                    ef_model=ef_model, n_ef=n_ef, ef_forms=ef_forms)
+
+    @staticmethod
+    def _evolved(space, X_space):
+        X_scaled = space['scaler'].transform(X_space)
+        return (_transform_features(space['stgp_model'], X_scaled, space['n_stgp']),
+                _transform_features(space['ef_model'], X_scaled, space['n_ef']))
+
     def fit(self, X_train, y_train):
-        self.scaler_ = StandardScaler().fit(X_train)
-        X_scaled = self.scaler_.transform(X_train)
-        self.stgp_model_, self.n_stgp_, self.stgp_forms_ = _fit_stgp(X_scaled, y_train, self.n_best_features)
-        self.ef_model_, self.n_ef_, self.ef_forms_ = _fit_ef(X_scaled, y_train, self.n_best_features)
+        self.base_space_ = self._fit_space(X_train, y_train)
+        self.n_stgp_, self.n_ef_ = self.base_space_['n_stgp'], self.base_space_['n_ef']
+        self.stgp_forms_, self.ef_forms_ = self.base_space_['stgp_forms'], self.base_space_['ef_forms']
+        self.n_dk_stgp_ = self.n_dk_ef_ = 0
+        self.dk_stgp_forms_, self.dk_ef_forms_ = {}, {}
+        if self.has_domain_:
+            self.domain_space_ = self._fit_space(self._domain_space(X_train), y_train)
+            self.n_dk_stgp_, self.n_dk_ef_ = self.domain_space_['n_stgp'], self.domain_space_['n_ef']
+            self.dk_stgp_forms_ = {f'DK_{k}': v for k, v in self.domain_space_['stgp_forms'].items()}
+            self.dk_ef_forms_ = {f'DK_{k}': v for k, v in self.domain_space_['ef_forms'].items()}
         return self
 
     def build_matrices(self, X_raw):
         """Her senaryo icin (olceklenmemis) ozellik matrisini dondurur."""
-        X_scaled = self.scaler_.transform(X_raw)
-        X_stgp = _transform_features(self.stgp_model_, X_scaled, self.n_stgp_)
-        X_ef = _transform_features(self.ef_model_, X_scaled, self.n_ef_)
+        X_stgp, X_ef = self._evolved(self.base_space_, X_raw)
         mats = {
             'Base': X_raw,
             'STGP': np.hstack([X_raw, X_stgp]),
             'EF': np.hstack([X_raw, X_ef]),
             'HYBRID': np.hstack([X_raw, X_stgp, X_ef]),
         }
-        if DOMAIN_SCENARIO in self.scenarios:
-            mats[DOMAIN_SCENARIO] = np.hstack([X_raw, domain_knowledge_features(X_raw)])
+        if self.has_domain_:
+            X_dk = self._domain_space(X_raw)
+            D_stgp, D_ef = self._evolved(self.domain_space_, X_dk)
+            mats[DOMAIN_SCENARIO] = X_dk
+            mats['DK_STGP'] = np.hstack([X_dk, D_stgp])
+            mats['DK_EF'] = np.hstack([X_dk, D_ef])
+            mats['DK_HYBRID'] = np.hstack([X_dk, D_stgp, D_ef])
         return mats
 
     def feature_info(self, scenario):
         names = list(self.input_cols)
         types = ['Orijinal'] * len(names)
-        if scenario in ('STGP', 'HYBRID'):
-            names += [f'STGP_{i:02d}' for i in range(self.n_stgp_)]
-            types += ['STGP'] * self.n_stgp_
-        if scenario in ('EF', 'HYBRID'):
-            names += [f'EF_{i:02d}' for i in range(self.n_ef_)]
-            types += ['EF'] * self.n_ef_
-        if scenario == DOMAIN_SCENARIO:
+        if scenario in DOMAIN_SCENARIOS:
             names += DOMAIN_FEATURE_NAMES
             types += ['Alan_Bilgisi'] * len(DOMAIN_FEATURE_NAMES)
+            n_stgp, n_ef, prefix = self.n_dk_stgp_, self.n_dk_ef_, 'DK_'
+            use_stgp, use_ef = scenario in ('DK_STGP', 'DK_HYBRID'), scenario in ('DK_EF', 'DK_HYBRID')
+        else:
+            n_stgp, n_ef, prefix = self.n_stgp_, self.n_ef_, ''
+            use_stgp, use_ef = scenario in ('STGP', 'HYBRID'), scenario in ('EF', 'HYBRID')
+        if use_stgp:
+            names += [f'{prefix}STGP_{i:02d}' for i in range(n_stgp)]
+            types += ['STGP'] * n_stgp
+        if use_ef:
+            names += [f'{prefix}EF_{i:02d}' for i in range(n_ef)]
+            types += ['EF'] * n_ef
         return names, types
 
 
@@ -337,30 +375,6 @@ def summarize_scenarios(df_met, df_uyum):
     return m.join(v)
 
 
-def build_domain_knowledge_comparison(df_met, df_uyum):
-    """Mevcut senaryolari (doymus fazda Domain_Knowledge dahil) hedef x algoritma bazinda yan yana koyar."""
-    met = df_met.pivot_table(index=['Target', 'Algorithm'], columns='Scenario',
-                             values=['Test_R2', 'Test_RMSE'], observed=True)
-    met.columns = [f'{metric}_{scen}' for metric, scen in met.columns]
-
-    viol = (df_uyum.groupby(['Target', 'Algoritma', 'Scenario'], observed=True)['Ihlal_Yuzdesi_(%)']
-            .mean().unstack('Scenario'))
-    viol.columns = [f'Ihlal_{scen}' for scen in viol.columns]
-    viol.index.names = ['Target', 'Algorithm']
-
-    cmp = met.join(viol).reset_index()
-    ordered = ['Target', 'Algorithm'] + [f'{p}_{s}' for p in ('Test_R2', 'Test_RMSE', 'Ihlal') for s in ALL_SCENARIOS]
-    cmp = cmp[[c for c in ordered if c in cmp.columns]]
-
-    pairs = [(DOMAIN_SCENARIO, 'Base'), ('STGP', 'Base'), ('EF', 'Base'), ('HYBRID', 'Base'), ('HYBRID', DOMAIN_SCENARIO)]
-    for a, b in pairs:
-        if f'Test_R2_{a}' in cmp and f'Test_R2_{b}' in cmp:
-            cmp[f'Delta_R2_{a}_vs_{b}'] = cmp[f'Test_R2_{a}'] - cmp[f'Test_R2_{b}']
-        if f'Ihlal_{a}' in cmp and f'Ihlal_{b}' in cmp:
-            cmp[f'Delta_Ihlal_{a}_vs_{b}'] = cmp[f'Ihlal_{a}'] - cmp[f'Ihlal_{b}']
-    return cmp
-
-
 # ═══════════════════════════════════════════════════════════════════
 #  UNIFIED MASTER LOOP
 # ═══════════════════════════════════════════════════════════════════
@@ -369,7 +383,8 @@ def run_unified_analysis(df, input_cols, outputs_list, dataset_name,
     """Tum analiz TEK bir K-Fold dongusunde yapilir. STGP, EF, olceklendiriciler ve regresorler her katta
     YALNIZCA o katin egitim verisiyle fit edilir; test verisi ve sentetik izgara sadece transform/predict gorur.
 
-    Senaryolar: Base, STGP, EF, HYBRID. Doymus fazda ayrica Domain_Knowledge (1/T, ln(T)) karsilastirmasi yapilir.
+    Durum 1: Base, STGP, EF, HYBRID (ham girdiler). Durum 2 (yalnizca doymus faz): Domain_Knowledge (ham + 1/T + ln(T))
+    ve bu uzaydan uretilen DK_STGP, DK_EF, DK_HYBRID.
     """
     print(f"\n{'▓'*60}")
     print(f"  {dataset_name.upper()} - SIZINTISIZ K-FOLD VE TERMODİNAMİK UYUM ANALİZİ")
@@ -386,7 +401,7 @@ def run_unified_analysis(df, input_cols, outputs_list, dataset_name,
     all_metrics, all_importances, all_uyum, all_formulas = [], [], [], []
 
     # -------------------------------------------------------------------------
-    # FAZ 1: FOLD DONGUSU (oznitelik uretimi + 5 senaryo egitimi + importance + monotonluk)
+    # FAZ 1: FOLD DONGUSU (oznitelik uretimi + coklu senaryo egitimi + importance + monotonluk)
     # -------------------------------------------------------------------------
     print("\n[FAZ 1/3] K-Fold dongusu: STGP-EF her katta yalnizca egitim verisiyle fit ediliyor...")
     for target_col in outputs_list:
@@ -399,9 +414,10 @@ def run_unified_analysis(df, input_cols, outputs_list, dataset_name,
             builder = ScenarioFeatureBuilder(input_cols, n_best_features).fit(X_tr, y_tr)
             mats_tr, mats_te = builder.build_matrices(X_tr), builder.build_matrices(X_te)
 
-            for key, form in {**builder.stgp_forms_, **builder.ef_forms_}.items():
+            all_forms = {**builder.stgp_forms_, **builder.ef_forms_, **builder.dk_stgp_forms_, **builder.dk_ef_forms_}
+            for key, form in all_forms.items():
                 all_formulas.append({'Target': target_col, 'Fold': fold, 'Oznitelik': key,
-                                     'Algoritma': 'STGP' if key.startswith('STGP') else 'EF', 'Formul': form})
+                                     'Algoritma': key.rsplit('_', 1)[0], 'Formul': form})
 
             fitted_pipes = {}
             for scenario in builder.scenarios:
@@ -453,8 +469,6 @@ def run_unified_analysis(df, input_cols, outputs_list, dataset_name,
                .mean(numeric_only=True).drop(columns=['Fold']).reset_index())
     df_uyum = _order_scenarios(df_uyum).sort_values(['Target', 'Algoritma', 'Scenario', 'Test_Tipi']).reset_index(drop=True)
 
-    df_domain = build_domain_knowledge_comparison(df_met, df_uyum)
-
     # -------------------------------------------------------------------------
     # FAZ 3: EXCEL CIKTISI
     # -------------------------------------------------------------------------
@@ -464,8 +478,6 @@ def run_unified_analysis(df, input_cols, outputs_list, dataset_name,
         df_met.to_excel(writer, sheet_name='Performans_Ortalamalari', index=False)
         df_imp.to_excel(writer, sheet_name='Oznitelik_Bireysel_Katki', index=False)
         df_uyum.to_excel(writer, sheet_name='Termodinamik_Uyum', index=False)
-        if DOMAIN_SCENARIO in df_met['Scenario'].astype(str).unique():
-            df_domain.to_excel(writer, sheet_name='Alan_Bilgisi_Karsilastirma', index=False)
         pd.DataFrame(all_formulas).to_excel(writer, sheet_name='Uretilen_Formuller', index=False)
 
     print(f"-> Çıktı Dosyası Başarıyla Oluşturuldu: {excel_path}")
